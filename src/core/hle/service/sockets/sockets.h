@@ -19,6 +19,7 @@ enum class Errno : u32 {
     SUCCESS = 0,
     BADF = 9,
     AGAIN = 11,
+    FAULT = 14,
     INVAL = 22,
     MFILE = 24,
     PIPE = 32,

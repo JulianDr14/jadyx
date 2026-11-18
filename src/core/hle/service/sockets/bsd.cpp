@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -18,6 +21,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/bsd.h"
+#include "core/memory.h"
 #include "core/internal_network/event_fd.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
@@ -60,6 +64,81 @@ T GetValue(std::span<const u8> buffer) {
 template <typename T>
 void PutValue(std::span<u8> buffer, const T& t) {
     std::memcpy(buffer.data(), &t, (std::min)(sizeof(T), buffer.size()));
+}
+
+// One message of the buffer SendMMsg/RecvMMsg exchange (7.0.0+). After a leading 0x08 byte each
+// message is: u32 namelen, name, s32 iovlen, iovlen x (u64 len, data), u32 controllen, control,
+// s32 flags, s32 msg_len. The offsets point into that buffer.
+struct MMsgIov {
+    size_t data_offset;
+    size_t length;
+};
+
+struct MMsgEntry {
+    size_t namelen_offset;
+    size_t name_offset;
+    size_t namelen;
+    std::vector<MMsgIov> iovs;
+    size_t msg_len_offset;
+};
+
+std::optional<std::vector<MMsgEntry>> ParseMMsgBuffer(std::span<const u8> buffer, u32 vlen) {
+    std::vector<MMsgEntry> entries;
+    size_t pos = 1;
+    const auto take = [&](size_t size) -> std::optional<size_t> {
+        if (size > buffer.size() || pos > buffer.size() - size) {
+            return std::nullopt;
+        }
+        const size_t at = pos;
+        pos += size;
+        return at;
+    };
+    for (u32 i = 0; i < vlen; ++i) {
+        MMsgEntry entry{};
+        const auto namelen_at = take(sizeof(u32));
+        if (!namelen_at) {
+            return std::nullopt;
+        }
+        entry.namelen_offset = *namelen_at;
+        entry.namelen = GetValue<u32>(buffer.subspan(*namelen_at));
+        const auto name_at = take(entry.namelen);
+        const auto iovlen_at = name_at ? take(sizeof(s32)) : std::nullopt;
+        if (!iovlen_at) {
+            return std::nullopt;
+        }
+        entry.name_offset = *name_at;
+        const s32 iovlen = GetValue<s32>(buffer.subspan(*iovlen_at));
+        if (iovlen < 0 || iovlen > 1024) {
+            return std::nullopt;
+        }
+        for (s32 v = 0; v < iovlen; ++v) {
+            const auto len_at = take(sizeof(u64));
+            if (!len_at) {
+                return std::nullopt;
+            }
+            const u64 length = GetValue<u64>(buffer.subspan(*len_at));
+            const auto data_at = length <= buffer.size() ? take(static_cast<size_t>(length))
+                                                         : std::nullopt;
+            if (!data_at) {
+                return std::nullopt;
+            }
+            entry.iovs.push_back({*data_at, static_cast<size_t>(length)});
+        }
+        const auto controllen_at = take(sizeof(u32));
+        if (!controllen_at) {
+            return std::nullopt;
+        }
+        const u32 controllen = GetValue<u32>(buffer.subspan(*controllen_at));
+        const auto control_at = take(controllen);
+        const auto flags_at = control_at ? take(sizeof(s32)) : std::nullopt;
+        const auto msg_len_at = flags_at ? take(sizeof(s32)) : std::nullopt;
+        if (!msg_len_at) {
+            return std::nullopt;
+        }
+        entry.msg_len_offset = *msg_len_at;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
 }
 
 } // Anonymous namespace
@@ -458,6 +537,146 @@ void BSD_USA::Write(HLERequestContext& ctx) {
                          .flags = 0,
                          .message = ctx.ReadBuffer(),
                      });
+}
+
+void BSD_USA::SendMMsg(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+
+    const auto respond = [&ctx](s32 ret, Errno bsd_errno) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(bsd_errno);
+    };
+
+    if (ctx.BufferDescriptorB().empty() || vlen == 0 || vlen > 0x20) {
+        LOG_WARNING(Service, "SendMMsg fd={} vlen={} has no usable buffer", fd, vlen);
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& descriptor = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buffer(descriptor.Size());
+    ctx.GetMemory().ReadBlock(descriptor.Address(), buffer.data(), buffer.size());
+
+    const auto entries = ParseMMsgBuffer(buffer, vlen);
+    if (!entries) {
+        LOG_WARNING(Service, "SendMMsg fd={} vlen={} buffer of {} bytes does not parse", fd, vlen,
+                    buffer.size());
+        respond(-1, Errno::FAULT);
+        return;
+    }
+
+    s32 sent_messages = 0;
+    Errno first_errno = Errno::SUCCESS;
+    size_t sent_bytes = 0;
+    for (const MMsgEntry& entry : *entries) {
+        std::vector<u8> message;
+        for (const MMsgIov& iov : entry.iovs) {
+            message.insert(message.end(), buffer.begin() + iov.data_offset,
+                           buffer.begin() + iov.data_offset + iov.length);
+        }
+        const std::span<const u8> name{buffer.data() + entry.name_offset, entry.namelen};
+        const auto [ret, bsd_errno] = entry.namelen != 0
+                                          ? SendToImpl(fd, flags, message, name)
+                                          : SendImpl(fd, flags, message);
+        if (ret < 0) {
+            first_errno = bsd_errno;
+            break;
+        }
+        PutValue(std::span<u8>{buffer}.subspan(entry.msg_len_offset), ret);
+        ++sent_messages;
+        sent_bytes += static_cast<size_t>(ret);
+        if (static_cast<size_t>(ret) < message.size()) {
+            break;
+        }
+    }
+
+    LOG_INFO(Service, "SendMMsg fd={} vlen={} sent {} messages, {} bytes, errno={}", fd, vlen,
+             sent_messages, sent_bytes, static_cast<u32>(first_errno));
+
+    if (sent_messages == 0) {
+        respond(-1, first_errno);
+        return;
+    }
+    ctx.WriteBuffer(buffer);
+    respond(sent_messages, Errno::SUCCESS);
+}
+
+void BSD_USA::RecvMMsg(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+    rp.Skip(1, false);
+    const s64 timeout_sec = rp.Pop<s64>();
+
+    const auto respond = [&ctx](s32 ret, Errno bsd_errno) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(bsd_errno);
+    };
+
+    if (ctx.BufferDescriptorB().empty() || vlen == 0 || vlen > 0x20) {
+        LOG_WARNING(Service, "RecvMMsg fd={} vlen={} has no usable buffer", fd, vlen);
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& descriptor = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buffer(descriptor.Size());
+    ctx.GetMemory().ReadBlock(descriptor.Address(), buffer.data(), buffer.size());
+
+    const auto entries = ParseMMsgBuffer(buffer, vlen);
+    if (!entries) {
+        LOG_WARNING(Service, "RecvMMsg fd={} vlen={} buffer of {} bytes does not parse", fd, vlen,
+                    buffer.size());
+        respond(-1, Errno::FAULT);
+        return;
+    }
+
+    // Receive one message, which recvmmsg allows; the guest calls again for more.
+    const MMsgEntry& entry = entries->front();
+    size_t capacity = 0;
+    for (const MMsgIov& iov : entry.iovs) {
+        capacity += iov.length;
+    }
+    std::vector<u8> message(capacity);
+    s32 ret;
+    Errno bsd_errno;
+    if (entry.namelen != 0) {
+        std::vector<u8> addr(entry.namelen);
+        std::tie(ret, bsd_errno) = RecvFromImpl(fd, flags, message, addr);
+        if (ret >= 0) {
+            const size_t name_size = (std::min)(addr.size(), entry.namelen);
+            std::fill_n(buffer.begin() + entry.name_offset, entry.namelen, u8{0});
+            std::copy_n(addr.begin(), name_size, buffer.begin() + entry.name_offset);
+            PutValue(std::span<u8>{buffer}.subspan(entry.namelen_offset),
+                     static_cast<u32>(name_size));
+        }
+    } else {
+        std::tie(ret, bsd_errno) = RecvImpl(fd, flags, message);
+    }
+
+    LOG_INFO(Service, "RecvMMsg fd={} vlen={} timeout={}s got {} bytes, errno={}", fd, vlen,
+             timeout_sec, ret, static_cast<u32>(bsd_errno));
+
+    if (ret < 0) {
+        respond(-1, bsd_errno);
+        return;
+    }
+
+    size_t copied = 0;
+    for (const MMsgIov& iov : entry.iovs) {
+        const size_t chunk = (std::min)(iov.length, static_cast<size_t>(ret) - copied);
+        std::copy_n(message.begin() + copied, chunk, buffer.begin() + iov.data_offset);
+        copied += chunk;
+    }
+    PutValue(std::span<u8>{buffer}.subspan(entry.msg_len_offset), ret);
+    ctx.WriteBuffer(buffer);
+    respond(1, Errno::SUCCESS);
 }
 
 void BSD_USA::Read(HLERequestContext& ctx) {
@@ -1234,8 +1453,8 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
         {26, &BSD_USA::Close, "Close"},
         {27, &BSD_USA::DuplicateSocket, "DuplicateSocket"},
         {28, nullptr, "GetResourceStatistics"},
-        {29, nullptr, "RecvMMsg"}, //3.0.0+
-        {30, nullptr, "SendMMsg"}, //3.0.0+
+        {29, &BSD_USA::RecvMMsg, "RecvMMsg"}, //3.0.0+
+        {30, &BSD_USA::SendMMsg, "SendMMsg"}, //3.0.0+
         {31, &BSD_USA::EventFd, "EventFd"}, //7.0.0+
         {32, nullptr, "RegisterResourceStatisticsName"}, //7.0.0+
         {33, nullptr, "RegisterClientShared"}, //10.0.0+

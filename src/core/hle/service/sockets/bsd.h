@@ -160,6 +160,8 @@ private:
     void Send(HLERequestContext& ctx);
     void SendTo(HLERequestContext& ctx);
     void Write(HLERequestContext& ctx);
+    void SendMMsg(HLERequestContext& ctx);
+    void RecvMMsg(HLERequestContext& ctx);
     void Read(HLERequestContext& ctx);
     void Close(HLERequestContext& ctx);
     void DuplicateSocket(HLERequestContext& ctx);
