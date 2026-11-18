@@ -118,6 +118,9 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         PollOnline();
         // While this console hosts a room, the tab opens on it.
         if (OnlineHosting(online_page.status)) online_page.host = true;
+        // While play goes through Nextendo, the tab opens on Nextendo instead of the rooms.
+        else if (Network::Nextendo::ServicePreferences().use_nextendo && !online_page.nextendo)
+            ShowOnlineNetwork(true);
         // The public list downloads when the tab first opens, and again after a failure; the
         // refresh button downloads it whenever asked.
         if (online_page.lobby.state == Online::LobbyState::Empty || online_page.lobby.state == Online::LobbyState::Failed)
