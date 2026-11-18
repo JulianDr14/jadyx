@@ -29,6 +29,7 @@
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 
 #include "jadyx/network/nextendo/service.h"
+#include "jadyx/network/nextendo/link_monitor.h"
 #include "jadyx/network/online_rooms.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/app/boot_renderer_decls.h"
@@ -100,6 +101,8 @@ void SessionMenu::DrawMenu() {
         std::wstring room;
         if (online.phase == Online::Phase::Joined)
             room = Common::UTF8ToUTF16W(online.room_name.empty() ? online.address : online.room_name);
+        else if (const auto link = Network::Nextendo::LinkMonitorSnapshot())
+            room = Network::Nextendo::LinkPillText(*link).text; // "Nextendo · 34 ms"
         const bool dropped = online.phase == Online::Phase::Idle && (online.failure == Online::Failure::LostConnection ||
                                                                      online.failure == Online::Failure::Kicked);
         // Memory Edit reads its numbers on the stopped game, so it keeps the whole screen.
@@ -173,7 +176,8 @@ void SessionMenu::KeyboardPress(std::optional<KeyboardReply> reply) {
 }
 
 void SessionMenu::Open() {
-    live = Online::InRoom();
+    // In a room, or playing on Nextendo, the others keep playing: the game must not stop.
+    live = Online::InRoom() || Network::Nextendo::PlayingOnNextendo();
     if (!live) PauseGuest();
     input.SetMenuOpen(true);
     SetTextEntryActive(false); // The real keyboard drives the menu.
@@ -228,7 +232,7 @@ void SessionMenu::Open() {
     menu->SetDsu(DsuClient::Status());
     const bool from_notice = notice_shown && notice_is_chat;
     HideChatNotice();
-    if (live) {
+    if (live && Online::InRoom()) {
         const auto chat = Online::Chat();
         menu->SetChat(chat.unread);
         chat_version = chat.version;
@@ -265,7 +269,8 @@ void SessionMenu::Open() {
                             ? Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))
                             : std::wstring{});
     }
-    WriteDiag(std::string{"menu: opened, "} + (live ? "guest running (online room)" : "guest paused") +
+    WriteDiag(std::string{"menu: opened, "} + (live ? (Online::InRoom() ? "guest running (online room)" : "guest running (Nextendo)")
+                                                         : "guest paused") +
               " | " + MemoryReport());
     if (menu_surface) DrawMenu();
 }
@@ -777,7 +782,8 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
         if (!config.airplane_mode)
             Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default) &&
-                                                    !Online::InRoom()); // A room needs the network.
+                                                    !Online::InRoom() && // A room needs the network,
+                                                    !Network::Nextendo::PlayingOnNextendo()); // Nextendo too.
         WriteDiag(std::string{"menu: offline mode "} +
                   (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
     }
