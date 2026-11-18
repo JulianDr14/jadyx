@@ -25,6 +25,7 @@
 #include "common/logging.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/network/http.h"
+#include "jadyx/network/nextendo/link_monitor.h"
 #include "jadyx/network/nextendo/network_mode.h"
 #include "jadyx/network/nextendo/pkce.h"
 #include "jadyx/network/online_rooms.h"
@@ -562,12 +563,15 @@ void RefreshCatalog() {
 void GameStarted(std::uint64_t title_id, std::string detail) {
     auto& state = Shared();
     bool use = false;
+    std::string server_ip;
     {
         std::scoped_lock lock{state.mutex};
         state.game_running = true;
         use = state.preferences.use_nextendo;
+        server_ip = state.preferences.server_ip;
     }
     if (use) {
+        StartLinkMonitor(std::move(server_ip));
         Post([title_id, detail = std::move(detail)](Session& session) mutable {
             session.SetPlaying(title_id, std::move(detail));
         });
@@ -580,7 +584,14 @@ void GameEnded() {
         std::scoped_lock lock{state.mutex};
         state.game_running = false;
     }
+    StopLinkMonitor();
     Post([](Session& session) { session.SetPlaying(0, {}); });
+}
+
+bool PlayingOnNextendo() {
+    auto& state = Shared();
+    std::scoped_lock lock{state.mutex};
+    return state.game_running && state.preferences.use_nextendo;
 }
 
 LaunchCheck CheckGame(std::uint64_t title_id, std::string_view installed_version) {

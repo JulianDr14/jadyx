@@ -233,6 +233,10 @@ add_executable(jadyx WIN32
     network/nextendo/bcat_sync.h
     network/nextendo/catalog_rows.cpp
     network/nextendo/catalog_rows.h
+    network/nextendo/link_monitor.cpp
+    network/nextendo/link_monitor.h
+    network/nextendo/link_stats.cpp
+    network/nextendo/link_stats.h
     network/nextendo/network_mode.h
     network/nextendo/pkce.cpp
     network/nextendo/pkce.h

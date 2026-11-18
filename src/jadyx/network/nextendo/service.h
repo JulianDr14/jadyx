@@ -73,6 +73,9 @@ void RefreshCatalog();
 /// detail: what friends read (the game's name).
 void GameStarted(std::uint64_t title_id, std::string detail);
 void GameEnded();
+/// A game runs and Nextendo is its network: it plays like in an Eden room (the menu does not
+/// pause it, the HUD shows the connection, no Pulse resume).
+bool PlayingOnNextendo();
 
 /// The catalog's advice for a game about to start.
 LaunchCheck CheckGame(std::uint64_t title_id, std::string_view installed_version);
