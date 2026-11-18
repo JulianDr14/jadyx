@@ -883,9 +883,9 @@ int RunHeadlessBoot(const std::string& launch_path, const BootSurface& surface,
     struct OverlayRestore {
         bool active;
         ~OverlayRestore() {
-            if (active)
-                VideoCore::performance_overlay_enabled.store(LoadSystemSettings().show_performance_stats,
-                                                             std::memory_order_relaxed);
+            if (!active) return;
+            const auto settings = LoadSystemSettings();
+            PublishStatsOverlay(settings.show_performance_stats, settings.stats);
         }
     } overlay_restore{mii_editor};
     if (!config.log_filter.empty()) {

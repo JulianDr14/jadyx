@@ -743,7 +743,7 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         auto settings = LoadSystemSettings();
         settings.show_performance_stats = menu->Settings().show_performance_stats;
         if (!SaveSystemSettings(settings)) WriteDiag("menu: statistics preference could not be saved");
-        VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
+        PublishStatsOverlay(settings.show_performance_stats, settings.stats);
     }
     if (result == GameMenuResult::FullScreen) {
         g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
