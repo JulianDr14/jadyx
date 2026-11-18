@@ -901,9 +901,19 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         }
         return Translate(getsockopt_err);
     }
-    default:
+    default: {
+        // Clients that verify an option after setting it close the socket on a zero answer, so
+        // echo what the guest set.
+        const auto& options = file_descriptors[fd]->socket_options;
+        const auto it = options.find(static_cast<u32>(optname));
+        if (it != options.end()) {
+            optval.resize(sizeof(u32));
+            PutValue(optval, it->second);
+            return Errno::SUCCESS;
+        }
         UNIMPLEMENTED_MSG("Unimplemented optname={}", optname);
         return Errno::SUCCESS;
+    }
     }
 }
 
@@ -937,8 +947,13 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         return Translate(socket->SetLinger(linger.onoff != 0, linger.linger));
     }
 
-    ASSERT(optval.size() == sizeof(u32));
+    if (optval.size() != sizeof(u32)) {
+        LOG_WARNING(Service, "(STUBBED) setsockopt optname={:#x} with a {}-byte value",
+                    static_cast<u32>(optname), optval.size());
+        return Errno::SUCCESS;
+    }
     auto value = GetValue<u32>(optval);
+    file_descriptors[fd]->socket_options[static_cast<u32>(optname)] = value;
 
     switch (optname) {
     case OptName::REUSEADDR:

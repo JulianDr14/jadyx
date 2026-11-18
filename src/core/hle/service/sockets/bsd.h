@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -57,6 +58,8 @@ private:
         bool is_connection_based = false;
         // TCP_NODELAY as the guest set it; read back by clients that verify the option.
         bool tcp_nodelay = false;
+        // SOL_SOCKET u32 options as the guest set them, echoed by getsockopt.
+        std::map<u32, u32> socket_options;
     };
 
     struct PollWork {
