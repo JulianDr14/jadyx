@@ -127,6 +127,8 @@ add_executable(jadyx WIN32
     storage/atomic_file.h
     storage/utf8.h
     # Drawing shared by the library and the in-game menu (real text over the paused game).
+    ui/qr_code.cpp
+    ui/qr_code.h
     ui/ui_icon.h
     ui/ui_fonts.cpp
     ui/ui_fonts.h
