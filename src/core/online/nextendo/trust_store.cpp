@@ -83,6 +83,30 @@ x509_store_st* BuildRootStore() {
     return store;
 }
 
+std::vector<unsigned char> RootDer(std::string_view label) {
+    for (const auto& root : Roots::kRoots) {
+        if (root.label != label) {
+            continue;
+        }
+        X509* cert = LoadPinned(root);
+        if (cert == nullptr) {
+            return {};
+        }
+        std::vector<unsigned char> der;
+        const int size = i2d_X509(cert, nullptr);
+        if (size > 0) {
+            der.resize(static_cast<std::size_t>(size));
+            unsigned char* out = der.data();
+            if (i2d_X509(cert, &out) != size) {
+                der.clear();
+            }
+        }
+        X509_free(cert);
+        return der;
+    }
+    return {};
+}
+
 std::string CertificateSha256(std::string_view pem) {
     X509* cert = ReadCertificate(pem);
     if (cert == nullptr) {

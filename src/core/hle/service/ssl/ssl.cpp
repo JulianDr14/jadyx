@@ -801,8 +801,11 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
                                InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
             const Result result =
                 cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids);
-            LOG_INFO(Service_SSL, "ssl:s GetCertificates: {} ids, buffer {:#x}, {} entries, {:#x}",
-                     certificate_ids.size(), out_buffer.size(), *out_num_entries, result.raw);
+            LOG_INFO(Service_SSL,
+                     "ssl:s GetCertificates: {} ids (first {}), buffer {:#x}, {} entries, {:#x}",
+                     certificate_ids.size(),
+                     certificate_ids.empty() ? 0 : static_cast<s32>(certificate_ids[0]),
+                     out_buffer.size(), *out_num_entries, result.raw);
             R_RETURN(result);
         }
 

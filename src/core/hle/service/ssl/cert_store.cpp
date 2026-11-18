@@ -9,6 +9,8 @@
 #include "core/file_sys/romfs.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/ssl/cert_store.h"
+#include "core/online/nextendo/config.h"
+#include "core/online/nextendo/trust_store.h"
 
 namespace Service::SSL {
 
@@ -75,19 +77,47 @@ CertStore::CertStore(Core::System& system) {
 
 CertStore::~CertStore() = default;
 
+// Games that run their own TLS verify the server against the roots they read here. Nextendo
+// servers present their own "Nintendo Class 2 CA - G3", so while Nextendo is on that id answers
+// with the pinned Nextendo root instead of the firmware one.
+const std::vector<u8>* CertStore::NextendoOverride(CaCertificateId id) {
+    namespace Nx = Core::Online::Nextendo;
+    if (id != CaCertificateId::NintendoClass2CAG3 || !Nx::GlobalConfig().Snapshot()->enabled) {
+        return nullptr;
+    }
+    if (!m_nextendo_class2_loaded) {
+        m_nextendo_class2_loaded = true;
+        const auto der = Nx::RootDer("npln-class2-ca-g3");
+        m_nextendo_class2.assign(der.begin(), der.end());
+        LOG_INFO(Service_SSL, "[Nextendo] Class 2 CA - G3 answers with the Nextendo root ({} bytes)",
+                 m_nextendo_class2.size());
+    }
+    return m_nextendo_class2.empty() ? nullptr : &m_nextendo_class2;
+}
+
 template <typename F>
 void CertStore::ForEachCertificate(std::span<const CaCertificateId> certificate_ids, F&& f) {
+    const auto visit = [&](CaCertificateId id, const Certificate* stored) {
+        if (const auto* der = NextendoOverride(id)) {
+            const std::pair<const CaCertificateId, Certificate> entry{
+                id, Certificate{.status = TrustedCertStatus::EnabledTrusted, .der_data = *der}};
+            f(entry);
+        } else if (stored != nullptr) {
+            const std::pair<const CaCertificateId, Certificate> entry{id, *stored};
+            f(entry);
+        }
+    };
     if (certificate_ids.size() == 1 && certificate_ids.front() == CaCertificateId::All) {
         for (const auto& entry : m_certs) {
-            f(entry);
+            visit(entry.first, &entry.second);
+        }
+        if (!m_certs.contains(CaCertificateId::NintendoClass2CAG3)) {
+            visit(CaCertificateId::NintendoClass2CAG3, nullptr);
         }
     } else {
         for (const auto certificate_id : certificate_ids) {
             const auto entry = m_certs.find(certificate_id);
-            if (entry == m_certs.end()) {
-                continue;
-            }
-            f(*entry);
+            visit(certificate_id, entry == m_certs.end() ? nullptr : &entry->second);
         }
     }
 }

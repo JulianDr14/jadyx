@@ -36,7 +36,11 @@ private:
         std::vector<u8> der_data;
     };
 
+    const std::vector<u8>* NextendoOverride(CaCertificateId id);
+
     std::map<CaCertificateId, Certificate> m_certs;
+    std::vector<u8> m_nextendo_class2;
+    bool m_nextendo_class2_loaded = false;
 };
 
 } // namespace Service::SSL

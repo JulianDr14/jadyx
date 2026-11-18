@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 struct x509_store_st;
 
@@ -26,6 +27,9 @@ std::size_t CountValidRoots();
 /// New X509_STORE holding every valid embedded root (caller frees with X509_STORE_free).
 /// nullptr if none could be loaded.
 x509_store_st* BuildRootStore();
+
+/// DER of the embedded root with this label if it parses and matches its pin; empty otherwise.
+std::vector<unsigned char> RootDer(std::string_view label);
 
 /// Upper-case hex SHA-256 of the DER of the first certificate in pem; "" on parse failure.
 std::string CertificateSha256(std::string_view pem);
