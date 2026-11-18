@@ -288,6 +288,7 @@ private:
     GraphicsPage graphics_page;
     OnlinePage online_page;
     bool nextendo_shown{}; ///< Last told to the Nextendo service (ShowingNextendo).
+    bool nextendo_launch{}; ///< A on an installed game of the Nextendo list: it starts this frame.
     /// The portal was started for a Nextendo sign-in; it closes a little after the sign-in ends.
     bool nextendo_portal{};
     std::chrono::steady_clock::time_point nextendo_portal_close{};

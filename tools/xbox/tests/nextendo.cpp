@@ -1176,6 +1176,36 @@ void TestNextendoPage() {
         Check(Jadyx::NextendoSignedIn(page) == signed_in);
     }
 
+    // The header's live dot: Nextendo chosen and the account ready, nothing less.
+    page.view.phase = App::Phase::Ready;
+    page.preferences.use_nextendo = false;
+    Check(!Jadyx::NextendoLiveNow(page));
+    page.preferences.use_nextendo = true;
+    Check(Jadyx::NextendoLiveNow(page));
+    page.view.phase = App::Phase::Connecting;
+    Check(!Jadyx::NextendoLiveNow(page));
+
+    // A games row reaches its library entry only while that entry is still of its title.
+    {
+        struct Entry {
+            std::uint64_t program_id;
+        };
+        page.games.resize(3);
+        page.games[0].title_id = 0x0100000000010000;
+        page.games[1].title_id = 0x0100000000020000;
+        page.games[2].title_id = 0x0100000000030000;
+        page.entries = {1, Jadyx::NextendoPage::NoEntry, 5};
+        const std::vector<Entry> library{{0}, {0x0100000000010800}, {0x0100000000030000}};
+        Check(Jadyx::NextendoRowEntry(page, 0, library) == 1); // an update id shares the base title
+        Check(Jadyx::NextendoRowEntry(page, 1, library) == Jadyx::NextendoPage::NoEntry); // not installed
+        Check(Jadyx::NextendoRowEntry(page, 2, library) == Jadyx::NextendoPage::NoEntry); // past the scan
+        Check(Jadyx::NextendoRowEntry(page, 3, library) == Jadyx::NextendoPage::NoEntry); // past the rows
+        page.entries[0] = 2; // a rescan moved another game there
+        Check(Jadyx::NextendoRowEntry(page, 0, library) == Jadyx::NextendoPage::NoEntry);
+        page.games.clear();
+        page.entries.clear();
+    }
+
     // Nothing to say when Nextendo is off or the game is served; a text for every other case.
     Check(Jadyx::LaunchAdviceText(App::LaunchAdvice::NotUsingNextendo) == Text::Count);
     Check(Jadyx::LaunchAdviceText(App::LaunchAdvice::Supported) == Text::Count);

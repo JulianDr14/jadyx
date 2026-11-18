@@ -684,7 +684,8 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
     if (page.nextendo) {
         HandleNextendoPage(now);
         dirty = true;
-        actions &= Panel;
+        // A game the list starts keeps A for StartValidation.
+        actions &= nextendo_launch ? (Panel | Play) : Panel;
         return;
     }
     if (page.in_chat) {
@@ -1110,25 +1111,54 @@ void LibrarySession::PollNextendo() {
             }
         }
     }
-    if (tab != LibraryTab::Online) return;
+    // The account on every tab: the header shows its name and picture and marks the Online tab.
     auto& page = online_page.nx;
+    const std::uint64_t version = Nx::ServiceVersion();
+    if (version != page.version) {
+        page.version = version;
+        page.preferences = Nx::ServicePreferences();
+        page.view = Nx::ServiceView();
+        page.avatar = Nx::ServiceAvatar();
+        dirty = true;
+    }
+    if (tab != LibraryTab::Online) return;
     std::size_t titles = 0;
     for (const auto& entry : scan.entries) titles += entry.program_id != 0;
-    const std::uint64_t version = Nx::ServiceVersion();
-    if (version == page.version && titles == page.library_titles) return;
-    page.version = version;
+    // A rescan that moved the games under the rows makes them again too.
+    bool moved = false;
+    for (std::size_t row = 0; row < page.entries.size() && !moved; ++row)
+        moved = page.entries[row] != NextendoPage::NoEntry &&
+                NextendoRowEntry(page, row, scan.entries) == NextendoPage::NoEntry;
+    if (version == page.games_version && titles == page.library_titles && !moved) return;
+    page.games_version = version;
     page.library_titles = titles;
-    page.preferences = Nx::ServicePreferences();
-    page.view = Nx::ServiceView();
     // A few hundred rows at most, and only when something changed: made again whole.
     std::vector<Nx::InstalledTitle> installed;
+    std::vector<std::size_t> installed_entry;
     installed.reserve(titles);
-    for (const auto& entry : scan.entries) {
+    installed_entry.reserve(titles);
+    for (std::size_t i = 0; i < scan.entries.size(); ++i) {
+        const auto& entry = scan.entries[i];
         if (entry.program_id == 0) continue;
         installed.push_back({FileSys::GetBaseTitleID(entry.program_id), OnlineNarrow(entry.name),
                              OnlineNarrow(entry.display_version)});
+        installed_entry.push_back(i);
     }
     page.games = Nx::BuildCatalogRows(Nx::ServiceCatalog(), installed);
+    // Each installed row's game in the scan: the first entry of its title, the base game first.
+    page.entries.assign(page.games.size(), NextendoPage::NoEntry);
+    for (std::size_t row = 0; row < page.games.size(); ++row) {
+        if (!page.games[row].installed) continue;
+        for (std::size_t i = 0; i < installed.size(); ++i) {
+            if (installed[i].title_id != page.games[row].title_id) continue;
+            const auto entry = installed_entry[i];
+            auto& chosen = page.entries[row];
+            if (chosen == NextendoPage::NoEntry ||
+                (scan.entries[entry].program_id == page.games[row].title_id &&
+                 scan.entries[chosen].program_id != page.games[row].title_id))
+                chosen = entry;
+        }
+    }
     page.game = page.games.empty() ? 0 : std::min(page.game, page.games.size() - 1);
     if (page.games.empty()) page.in_games = false;
     dirty = true;
@@ -1164,6 +1194,16 @@ void LibrarySession::HandleNextendoPage(TimePoint now) {
         if (actions & Up && page.game > 0) page.game--;
         if (actions & Down && page.game + 1 < page.games.size()) page.game++;
         if (actions & Left) page.in_games = false;
+        // A on an installed game starts it, as from Home: the library's check runs first.
+        if (actions & Play) {
+            const auto entry = NextendoRowEntry(page, page.game, scan.entries);
+            if (entry != NextendoPage::NoEntry) {
+                selected = entry;
+                nextendo_launch = true;
+            } else {
+                say(T::NxGameNotInstalled);
+            }
+        }
         return;
     }
     if (actions & Up && page.selected > 0) page.selected--;

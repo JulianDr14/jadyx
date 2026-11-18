@@ -1194,6 +1194,7 @@ enum class Text : std::uint16_t {
     NxVerdictNotInstalled,
     NxGameInstalled,
     NxGameRecommended,
+    NxGameNotInstalled,
     NxRoomsPaused,
     NxGameRunning,
     NxChosen,

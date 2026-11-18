@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,11 +34,36 @@ struct NextendoPage {
     bool show_addresses{}; ///< The addresses read in full; dots until Y shows them.
 
     std::uint64_t version = ~std::uint64_t{0}; ///< The service's, for the copy below (none yet).
+    std::uint64_t games_version = ~std::uint64_t{0}; ///< The service's when `games` was made.
     std::size_t library_titles{};     ///< Library games with a known title id, when `games` was made.
     Network::Nextendo::Preferences preferences;
     Network::Nextendo::SessionView view;
+    /// The account picture's bytes (the header and the account card draw it); null: the initial.
+    std::shared_ptr<const std::string> avatar;
     std::vector<Network::Nextendo::CatalogRow> games;
+    /// Per row of `games`: its game in the library's scan (the cover, A starts it); NoEntry when
+    /// it is not installed.
+    std::vector<std::size_t> entries;
+    static constexpr std::size_t NoEntry = ~std::size_t{0};
 };
+
+/// The library entry (scan.entries, LibraryEntry) of a games row, or NoEntry. A rescan may have
+/// moved the entries since the rows were made: an entry of another title is none.
+template <typename Entries>
+std::size_t NextendoRowEntry(const NextendoPage& page, std::size_t row, const Entries& library) {
+    if (row >= page.entries.size() || row >= page.games.size()) return NextendoPage::NoEntry;
+    const auto entry = page.entries[row];
+    // The base title, as FileSys::GetBaseTitleID: updates and add-ons share it.
+    constexpr std::uint64_t BaseMask = 0xFFFFFFFFFFFFE000ull;
+    if (entry >= library.size() || (library[entry].program_id & BaseMask) != page.games[row].title_id)
+        return NextendoPage::NoEntry;
+    return entry;
+}
+
+/// The Online tab's mark in the header: Nextendo is the chosen network and its account is ready.
+inline bool NextendoLiveNow(const NextendoPage& page) {
+    return page.preferences.use_nextendo && page.view.phase == Network::Nextendo::Phase::Ready;
+}
 
 /// The account is in a usable state: signed in, the tokens asked for or in hand.
 inline bool NextendoSignedIn(const NextendoPage& page) {

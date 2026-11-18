@@ -181,7 +181,8 @@ std::optional<std::string> LibrarySession::Run() {
         if (!panel.pad_map.open) panel.pad_map.notice.clear();
         FinishScan();
         AutoPick();
-        StartValidation(on_game);
+        StartValidation(on_game || nextendo_launch);
+        nextendo_launch = false;
         if (settings) HandleControllerPanel();
         else HandleNavigation();
         HandlePin(on_game);

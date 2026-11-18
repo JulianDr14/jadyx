@@ -1168,6 +1168,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::NxVerdictNotInstalled, L"Not installed"},
     {Text::NxGameInstalled, L"You have {0}"},
     {Text::NxGameRecommended, L"Recommended {0}"},
+    {Text::NxGameNotInstalled, L"This game is not in your library"},
     {Text::NxRoomsPaused, L"Nextendo is on: Eden rooms are paused. Turn it off in the Nextendo view to use them."},
     {Text::NxGameRunning, L"Close the game to change the network."},
     {Text::NxChosen, L"You now play online through Nextendo."},
