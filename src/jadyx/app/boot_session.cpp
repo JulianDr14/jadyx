@@ -369,11 +369,13 @@ std::optional<int> GameSession::LoadGuest() {
             requested_program.store(static_cast<s64>(index));
         });
     // Pulse: the identity this boot would save under, and the session it resumes if one matches.
-    // Not in a multiplayer room: a resumed snapshot would bring back a session the room never saw.
+    // Not in a multiplayer room, nor on Nextendo: a resumed snapshot would bring back a session the
+    // room (or the server) never saw.
     // Not for a program the game started: a resume would replace it with the kept one, and a
     // session kept from a program other than the first would resume into the wrong program.
     const bool started_other_program = started_by && started_by->program_index != 0;
-    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !Online::InRoom() &&
+    const bool online_play = Online::InRoom() || Network::Nextendo::ServicePreferences().use_nextendo;
+    if (config.pulse_sessions && PulseSessions::Enabled() && !mii_editor && !online_play &&
         !started_other_program) {
         try {
             const auto file = system.GetFilesystem()->OpenFile(nro_path, FileSys::OpenMode::Read);
@@ -386,8 +388,9 @@ std::optional<int> GameSession::LoadGuest() {
         } catch (const std::exception& e) {
             WritePulseLog(std::string("no identity: ") + e.what());
         }
-    } else if (config.pulse_sessions && Online::InRoom()) {
-        WritePulseLog("in a multiplayer room: no resume and no save this boot");
+    } else if (config.pulse_sessions && online_play) {
+        WritePulseLog(Online::InRoom() ? "in a multiplayer room: no resume and no save this boot"
+                                       : "on Nextendo: no resume and no save this boot");
     }
     if (boot_screen) {
         D3D12::SetWindowHandoff(ReleaseLaunchSplash);
@@ -528,10 +531,13 @@ void GameSession::PrepareGame() {
     // airplane=1 wins over both.
     if (const auto offline = LoadGameOfflineMode(program_id); offline && !config.airplane_mode)
         Settings::values.airplane_mode.SetValue(*offline);
-    // In a multiplayer room the game must see a network: the room is how it reaches the others.
-    if (Online::InRoom() && !config.airplane_mode && Settings::values.airplane_mode.GetValue()) {
+    // In a multiplayer room, or on Nextendo, the game must see a network: it is how it reaches
+    // the others.
+    const bool online_play = Online::InRoom() || Network::Nextendo::ServicePreferences().use_nextendo;
+    if (online_play && !config.airplane_mode && Settings::values.airplane_mode.GetValue()) {
         Settings::values.airplane_mode.SetValue(false);
-        WriteDiag("network: in a multiplayer room, offline mode is off for this game");
+        WriteDiag(Online::InRoom() ? "network: in a multiplayer room, offline mode is off for this game"
+                                   : "network: on Nextendo, offline mode is off for this game");
     }
     WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
                                                         : "network: the game sees the internet");
