@@ -29,6 +29,7 @@
 #include <thread>
 #include <utility>
 
+#include <fmt/format.h>
 #include <winrt/base.h>
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.Storage.h>
@@ -94,6 +95,7 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/network/nextendo/bcat_sync.h"
 #include "jadyx/network/nextendo/service.h"
 #include "jadyx/network/online_rooms.h"
 #include "jadyx/settings/nextendo_page.h"
@@ -166,6 +168,8 @@ private:
     void FinishPrewarmBudget(u32 tick);
     /// Tells Nextendo a game starts; the advice to show the player, or empty.
     std::wstring StartNextendo();
+    /// Nextendo is chosen and the game sees a network: its BCAT package, before guest code runs.
+    void SyncNextendoBcat();
     int PlayLoop();
     int TimedRun();
     int WaitForSentinels();
@@ -531,6 +535,7 @@ void GameSession::PrepareGame() {
     }
     WriteDiag(Settings::values.airplane_mode.GetValue() ? "network: offline mode, the game sees no internet"
                                                         : "network: the game sees the internet");
+    SyncNextendoBcat();
     prewarm_budget = PrewarmBudget{LoadPrewarmStep(program_id)};
     if (config.jit_prewarm != BootConfig::JitPrewarm::Off) {
         // All guest cores are still stopped. Each owns a separate JIT; never
@@ -622,6 +627,20 @@ void GameSession::FinishPrewarmBudget(u32 tick) {
                   std::to_string(prewarm_budget.MiBPerCore()) +
                   " MiB per core for this game's next session");
     }
+}
+
+void GameSession::SyncNextendoBcat() {
+    namespace Nx = Network::Nextendo;
+    if (mii_editor || program_id == 0 || Settings::values.airplane_mode.GetValue() ||
+        !Nx::ServicePreferences().use_nextendo)
+        return;
+    const u64 title_id = FileSys::GetBaseTitleID(program_id);
+    // The folder the emulated bcat services serve (BISFactory::GetBCATDirectory).
+    const auto cache = Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir) / "system" / "save" /
+                       "bcat" / fmt::format("{:016X}", title_id);
+    const auto result = Nx::SyncBcat(title_id, cache, std::chrono::seconds{12});
+    WriteDiag(std::string{"nextendo: BCAT "} + Nx::BcatSyncName(result.outcome) + " (" +
+              result.detail + ")");
 }
 
 std::wstring GameSession::StartNextendo() {

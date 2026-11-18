@@ -225,6 +225,10 @@ add_executable(jadyx WIN32
     network/http.cpp
     network/nextendo/api_types.cpp
     network/nextendo/api_types.h
+    network/nextendo/bcat_package.cpp
+    network/nextendo/bcat_package.h
+    network/nextendo/bcat_sync.cpp
+    network/nextendo/bcat_sync.h
     network/nextendo/catalog_rows.cpp
     network/nextendo/catalog_rows.h
     network/nextendo/network_mode.h
