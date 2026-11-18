@@ -43,12 +43,6 @@ struct CodeEmitFaults {
     std::size_t fatal = 0;      ///< Emissions that kept faulting and were let crash.
     std::size_t page_out = 0;   ///< Faults whose page was out of the working set when checked.
     std::size_t page_in = 0;    ///< Faults whose page was back in the working set when checked.
-    /// What ran beside each fault's first try, per Common::VmActivity::Kind (guest commit, guest
-    /// decommit, guest protect, GPU heap): busy, running then; recent, finished within 5 ms
-    /// before. quiet: none of them busy or recent.
-    std::array<std::size_t, 4> busy{};
-    std::array<std::size_t, 4> recent{};
-    std::size_t quiet = 0;
     /// From a fault's first try to the end of its emission, which completed.
     std::uint64_t recover_us_max = 0;
     std::uint64_t recover_us_total = 0;

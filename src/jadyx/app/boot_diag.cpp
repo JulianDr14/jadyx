@@ -27,7 +27,6 @@
 #include "common/host_memory.h"
 #include "common/log_rotation.h"
 #include "common/memory_ledger.h"
-#include "common/vm_activity.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/kernel.h"
@@ -239,16 +238,9 @@ std::string StorageReport() {
     return out;
 }
 
-// What ran beside the emit faults, how long they took to clear, and the first one's exception
-// record (diagnostic for the console's transient code write faults).
+// How long the emit faults took to clear and the first one's exception record.
 static std::string DescribeEmitFaultContext(const Dynarmic::CodeEmitFaults& faults) {
-    std::string text = "; beside them:";
-    for (std::size_t kind = 0; kind < faults.busy.size(); ++kind) {
-        text += std::string{" "} + Common::VmActivity::Name(kind) + " busy " +
-                std::to_string(faults.busy[kind]) + " recent " + std::to_string(faults.recent[kind]) +
-                ",";
-    }
-    text += " quiet " + std::to_string(faults.quiet);
+    std::string text;
     if (faults.recovered != 0) {
         text += "; cleared in avg " + std::to_string(faults.recover_us_total / faults.recovered) +
                 " us, max " + std::to_string(faults.recover_us_max) + " us";

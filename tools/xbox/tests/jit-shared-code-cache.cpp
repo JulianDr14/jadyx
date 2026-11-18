@@ -32,7 +32,6 @@
 #include <vector>
 
 #include "common/logging.h"
-#include "common/vm_activity.h"
 #include "dynarmic/backend/x64/a64_code_cache.h"
 #include "dynarmic/backend/x64/fast_dispatch_table.h"
 #include "dynarmic/backend/x64/in_flight_compiles.h"
@@ -704,12 +703,10 @@ void TestEmitFaultRetried() {
     u8* const page = static_cast<u8*>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS));
     REQUIRE(page != nullptr);
 
-    // Writable again a moment later: the write completes. The thread that opens it counts as a
-    // guest protection change running beside the fault.
+    // Writable again a moment later: the write completes.
     const CodeEmitFaults before = GetCodeEmitFaults();
     std::atomic<bool> protecting{false};
     std::thread opener{[page, &protecting] {
-        const ::Common::VmActivity::Scope vm{::Common::VmActivity::Kind::GuestProtect};
         protecting.store(true);
         std::this_thread::sleep_for(std::chrono::milliseconds{30});
         DWORD old{};
@@ -729,10 +726,7 @@ void TestEmitFaultRetried() {
     REQUIRE(recovered.recovered == before.recovered + 1 && recovered.fatal == before.fatal);
     // The first retry of each fault checks the page the next byte goes to.
     REQUIRE(recovered.page_out + recovered.page_in == before.page_out + before.page_in + 1);
-    // What ran beside it, how long it took to clear, and the first fault's record.
-    constexpr auto protect_kind = static_cast<std::size_t>(::Common::VmActivity::Kind::GuestProtect);
-    REQUIRE(recovered.busy[protect_kind] == before.busy[protect_kind] + 1);
-    REQUIRE(recovered.quiet == before.quiet);
+    // How long it took to clear, and the first fault's record.
     REQUIRE(recovered.recover_us_max >= 10'000);
     REQUIRE(recovered.first_code == EXCEPTION_ACCESS_VIOLATION && recovered.first_params >= 2);
     REQUIRE(recovered.first_info0 == 1 && recovered.first_info1 == reinterpret_cast<std::uintptr_t>(page));

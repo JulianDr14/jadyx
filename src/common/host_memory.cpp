@@ -72,7 +72,6 @@
 #include "common/host_memory.h"
 #include "common/logging.h"
 #include "common/settings.h"
-#include "common/vm_activity.h"
 #include "common/thread.h"
 
 #if defined(__ANDROID__) && __ANDROID_API__ < 30
@@ -434,7 +433,6 @@ bool CommitBackingPage(u8* fault_addr) {
         commit_len = HOST_PAGE_SIZE;
     }
     const auto commit = [&] {
-        const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestCommit};
         return g_pfn_virtual_alloc_from_app(base + commit_offset, commit_len, MEM_COMMIT,
                                             PAGE_READWRITE) != nullptr;
     };
@@ -2044,7 +2042,6 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
                 std::scoped_lock decommit{g_backing_decommit_mutex};
                 Permafrost::ForgetPages(reinterpret_cast<u8*>(pages_begin),
                                        reinterpret_cast<u8*>(pages_end));
-                const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestDecommit};
                 return VirtualFree(reinterpret_cast<void*>(pages_begin), pages_end - pages_begin,
                                    MEM_DECOMMIT);
             }()) {
@@ -2100,8 +2097,6 @@ size_t HostMemory::ReleaseBackingRegion(size_t physical_offset, size_t length) {
     Permafrost::ForgetPages(reinterpret_cast<u8*>(pages_begin), reinterpret_cast<u8*>(pages_end));
     ForEachCommittedRun(reinterpret_cast<u8*>(pages_begin), reinterpret_cast<u8*>(pages_end),
                         [&](u8* run_begin, u8* run_end) {
-                            const Common::VmActivity::Scope vm{
-                                Common::VmActivity::Kind::GuestDecommit};
                             if (VirtualFree(run_begin, run_end - run_begin, MEM_DECOMMIT)) {
                                 released += run_end - run_begin;
                                 if (Common::Pulse::Diagnostics()) {
@@ -2136,7 +2131,6 @@ BOOL ProtectBacking(u8* begin, size_t size, DWORD protection) {
         return function;
     }();
     DWORD old{};
-    const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestProtect};
     return protect && protect(begin, size, protection, &old);
 }
 
@@ -2183,7 +2177,6 @@ size_t ReleaseRuns(u8* span, const std::bitset<SPAN_PAGES>& candidates) {
     size_t released = 0;
     ForEachPageRun(release, [&](size_t first, size_t count) {
         u8* const begin = span + first * HOST_PAGE_SIZE;
-        const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestDecommit};
         if (VirtualFree(begin, count * HOST_PAGE_SIZE, MEM_DECOMMIT)) {
             released += count * HOST_PAGE_SIZE;
             if (Common::Pulse::Diagnostics()) {

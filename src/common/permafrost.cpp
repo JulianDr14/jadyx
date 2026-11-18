@@ -27,8 +27,6 @@
 #include <utility>
 #include <vector>
 
-#include "common/vm_activity.h"
-
 namespace Common::Permafrost {
 namespace {
 
@@ -488,7 +486,6 @@ bool ReadBack(Engine& e, Granule& g, u8* begin, size_t first_chunk, size_t last_
     if (!ok) {
         // The slot still holds everything: what was filled goes again.
         ForEachRun(filled, [&](size_t run, size_t count) {
-            const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestDecommit};
             VirtualFree(begin + run * PAGE_SIZE, count * PAGE_SIZE, MEM_DECOMMIT);
         });
         return false;
@@ -701,7 +698,6 @@ u64 Evict(Engine& e, Granule& g, u8* begin, size_t writer) {
     Mask released;
     ForEachRun(committed, [&](size_t first, size_t count) {
         u8* const run = begin + first * PAGE_SIZE;
-        const Common::VmActivity::Scope vm{Common::VmActivity::Kind::GuestDecommit};
         if (VirtualFree(run, count * PAGE_SIZE, MEM_DECOMMIT)) {
             for (size_t i = first; i < first + count; ++i) released.set(i);
         } else {

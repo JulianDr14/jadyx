@@ -62,7 +62,6 @@ static void RaiseJitMemoryFailure(DWORD code, const void* base, size_t size, DWO
 
 #include "common/assert.h"
 #include "common/dynamic_library.h"
-#include "common/vm_activity.h"
 #include "dynarmic/mcl/bit.hpp"
 #include "dynarmic/backend/x64/xbyak.h"
 
@@ -181,10 +180,6 @@ std::atomic<size_t> s_emit_faults_recovered{0};
 std::atomic<size_t> s_emit_faults_fatal{0};
 std::atomic<size_t> s_emit_fault_page_out{0};
 std::atomic<size_t> s_emit_fault_page_in{0};
-static_assert(::Common::VmActivity::KindCount == 4, "CodeEmitFaults::busy has one slot per kind");
-std::array<std::atomic<size_t>, ::Common::VmActivity::KindCount> s_emit_fault_busy{};
-std::array<std::atomic<size_t>, ::Common::VmActivity::KindCount> s_emit_fault_recent{};
-std::atomic<size_t> s_emit_fault_quiet{0};
 std::atomic<std::uint64_t> s_emit_recover_us_max{0};
 std::atomic<std::uint64_t> s_emit_recover_us_total{0};
 /// The first fault's exception record: taken once, published by s_emit_first_ready.
@@ -194,13 +189,16 @@ std::uint32_t s_emit_first_code = 0;
 std::uint32_t s_emit_first_params = 0;
 std::uint64_t s_emit_first_info0 = 0;
 std::uint64_t s_emit_first_info1 = 0;
-/// What finished this close before a fault counts as having run beside it.
-constexpr std::int64_t RECENT_VM_US = 5000;
 /// The cache this thread is emitting into (BlockOfCode::EmitScope), and the faults it retried in
 /// the current emission.
 thread_local const Backend::X64::BlockOfCode* t_emitting = nullptr;
 thread_local unsigned t_emit_fault_retries = 0;
 thread_local std::int64_t t_emit_fault_start_us = 0;
+std::int64_t NowUs() noexcept {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 /// About 2.5 s of waits in all: past that the fault is not the transient kind.
 constexpr unsigned MAX_EMIT_FAULT_RETRIES = 64;
 
@@ -243,7 +241,7 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
     const unsigned attempt = t_emit_fault_retries++;
     s_emit_fault_retries.fetch_add(1, std::memory_order_relaxed);
     if (attempt == 0) {
-        t_emit_fault_start_us = ::Common::VmActivity::NowUs();
+        t_emit_fault_start_us = NowUs();
         if (!s_emit_first_taken.exchange(true, std::memory_order_relaxed)) {
             const EXCEPTION_RECORD& record = *ep->ExceptionRecord;
             s_emit_first_code = record.ExceptionCode;
@@ -251,22 +249,6 @@ LONG NTAPI EmitFaultHandler(EXCEPTION_POINTERS* ep) {
             s_emit_first_info0 = record.NumberParameters > 0 ? record.ExceptionInformation[0] : 0;
             s_emit_first_info1 = record.NumberParameters > 1 ? record.ExceptionInformation[1] : 0;
             s_emit_first_ready.store(true, std::memory_order_release);
-        }
-        // Which address-space operations ran beside the fault (diagnostic).
-        bool any = false;
-        for (size_t kind = 0; kind < ::Common::VmActivity::KindCount; ++kind) {
-            const auto& state = ::Common::VmActivity::g_kinds[kind];
-            if (state.in_flight.load(std::memory_order_relaxed) != 0) {
-                s_emit_fault_busy[kind].fetch_add(1, std::memory_order_relaxed);
-                any = true;
-            } else if (const std::int64_t end = state.last_end_us.load(std::memory_order_relaxed);
-                       end != 0 && t_emit_fault_start_us - end <= RECENT_VM_US) {
-                s_emit_fault_recent[kind].fetch_add(1, std::memory_order_relaxed);
-                any = true;
-            }
-        }
-        if (!any) {
-            s_emit_fault_quiet.fetch_add(1, std::memory_order_relaxed);
         }
         // The console reports no faulting address; the write goes where the next byte is
         // emitted. Out of the working set there says the system trimmed a page being written.
@@ -312,11 +294,6 @@ CodeEmitFaults GetCodeEmitFaults() noexcept {
                           s_emit_fault_page_out.load(std::memory_order_relaxed),
                           s_emit_fault_page_in.load(std::memory_order_relaxed)};
 #ifdef _WIN32
-    for (size_t kind = 0; kind < faults.busy.size(); ++kind) {
-        faults.busy[kind] = s_emit_fault_busy[kind].load(std::memory_order_relaxed);
-        faults.recent[kind] = s_emit_fault_recent[kind].load(std::memory_order_relaxed);
-    }
-    faults.quiet = s_emit_fault_quiet.load(std::memory_order_relaxed);
     faults.recover_us_max = s_emit_recover_us_max.load(std::memory_order_relaxed);
     faults.recover_us_total = s_emit_recover_us_total.load(std::memory_order_relaxed);
     if (s_emit_first_ready.load(std::memory_order_acquire)) {
@@ -1407,7 +1384,7 @@ BlockOfCode::EmitScope::~EmitScope() {
             s_emit_faults_recovered.fetch_add(1, std::memory_order_relaxed);
 #ifdef _WIN32
             const auto took = static_cast<std::uint64_t>(
-                std::max<std::int64_t>(0, ::Common::VmActivity::NowUs() - t_emit_fault_start_us));
+                std::max<std::int64_t>(0, NowUs() - t_emit_fault_start_us));
             s_emit_recover_us_total.fetch_add(took, std::memory_order_relaxed);
             std::uint64_t max = s_emit_recover_us_max.load(std::memory_order_relaxed);
             while (took > max &&
