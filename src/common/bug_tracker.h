@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 #include <fmt/format.h>
 
 namespace Common::Log {
@@ -217,6 +218,20 @@ void Install(const std::filesystem::path& log_dir, std::string build_info);
 void SetTitle(std::uint64_t title_id, std::string name);
 /// Asks the writer to write everything now (device removed, before an abort).
 void RequestFlush() noexcept;
+/// One distinct bug in a report: a site, or one detail key of a keyed site.
+struct ReportEntry {
+    Category category;
+    std::string location;    ///< "video_core/x.cpp:12", below src/.
+    std::uint64_t key;       ///< The detail key of a keyed site; 0 otherwise.
+    bool keyed;
+    std::uint64_t hits;      ///< Hits since the previous report.
+    std::string message;     ///< The first occurrence's message.
+};
+
+/// The bugs hit since the previous call (the game that just ended), most hits first, at most
+/// `max_entries`. Takes the writer's lock for a moment; call it after the game stopped, never from
+/// an emulator thread. Empty while the tracker is off.
+[[nodiscard]] std::vector<ReportEntry> TakeReport(std::size_t max_entries);
 /// Writes the final summary and stops the writer.
 void Shutdown();
 /// Crash handlers only: appends pending first occurrences with plain C stdio, without locks.
