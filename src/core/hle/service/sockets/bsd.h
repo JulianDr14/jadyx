@@ -29,6 +29,8 @@ class Socket;
 
 namespace Service::Sockets {
 
+struct UdpTraffic;
+
 class BSD_USA final : public ServiceFramework<BSD_USA> {
 public:
     explicit BSD_USA(Core::System& system_, const char* name, bool is_user);
@@ -60,6 +62,8 @@ private:
         bool tcp_nodelay = false;
         // SOL_SOCKET u32 options as the guest set them, echoed by getsockopt.
         std::map<u32, u32> socket_options;
+        // Datagram counters for UDP sockets (null otherwise); shared by duplicated descriptors.
+        std::shared_ptr<UdpTraffic> udp;
     };
 
     struct PollWork {

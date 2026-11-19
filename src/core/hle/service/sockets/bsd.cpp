@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -31,6 +33,157 @@
 #include <common/settings.h>
 
 namespace Service::Sockets {
+
+// Per-socket datagram counters. Online games end a session when a peer goes quiet; these lines
+// show whether packets stopped arriving, stopped leaving, or failed on the host.
+struct UdpTraffic {
+    using Clock = std::chrono::steady_clock;
+
+    struct Peer {
+        u64 sent = 0;
+        u64 received = 0;
+        Clock::time_point last_received{};
+        bool quiet_reported = false;
+    };
+
+    static constexpr auto QuietAfter = std::chrono::seconds(2);
+    static constexpr auto ReportEvery = std::chrono::seconds(10);
+    static constexpr size_t MaxPeers = 32;
+    static constexpr u64 ErrorsLoggedInFull = 5;
+
+    explicit UdpTraffic(s32 fd_) : fd{fd_}, opened{Clock::now()}, last_report{opened} {}
+
+    void OnSend(const Network::SockAddrIn* to, s32 ret, Errno err) {
+        const auto now = Clock::now();
+        std::scoped_lock lk{mutex};
+        if (ret < 0) {
+            if (err != Errno::AGAIN && ++send_errors <= ErrorsLoggedInFull) {
+                LOG_WARNING(Service, "UDP fd={} send to {} failed: errno {}", fd, Name(to),
+                            static_cast<u32>(err));
+            }
+        } else {
+            ++sent;
+            sent_bytes += static_cast<u64>(ret);
+            if (Peer* peer = Find(to)) {
+                ++peer->sent;
+            }
+        }
+        // The game keeps sending while it waits, so quiet peers are found here.
+        for (auto& [key, peer] : peers) {
+            if (peer.received == 0 || peer.quiet_reported ||
+                now - peer.last_received < QuietAfter) {
+                continue;
+            }
+            peer.quiet_reported = true;
+            LOG_WARNING(Service, "UDP fd={} peer {} quiet for {:.1f} s, {} packets sent to it",
+                        fd, Name(key), Seconds(now - peer.last_received), peer.sent);
+        }
+        Report(now);
+    }
+
+    void OnReceive(const Network::SockAddrIn* from, s32 ret, Errno err) {
+        const auto now = Clock::now();
+        std::scoped_lock lk{mutex};
+        if (ret < 0) {
+            // EAGAIN is a non-blocking poll with nothing queued.
+            if (err != Errno::AGAIN && ++receive_errors <= ErrorsLoggedInFull) {
+                LOG_WARNING(Service, "UDP fd={} receive failed: errno {}", fd,
+                            static_cast<u32>(err));
+            }
+            return;
+        }
+        ++received;
+        received_bytes += static_cast<u64>(ret);
+        if (Peer* peer = Find(from)) {
+            if (peer->quiet_reported) {
+                LOG_INFO(Service, "UDP fd={} peer {} back after {:.1f} s", fd, Name(from),
+                         Seconds(now - peer->last_received));
+                peer->quiet_reported = false;
+            }
+            ++peer->received;
+            peer->last_received = now;
+        }
+        Report(now);
+    }
+
+    void OnClose() {
+        std::scoped_lock lk{mutex};
+        LOG_INFO(Service,
+                 "UDP fd={} closed after {:.1f} s: sent {} packets ({} B), received {} ({} B), "
+                 "errors send {} receive {}",
+                 fd, Seconds(Clock::now() - opened), sent, sent_bytes, received, received_bytes,
+                 send_errors, receive_errors);
+        for (const auto& [key, peer] : peers) {
+            LOG_INFO(Service, "UDP fd={}   peer {}: sent {}, received {}", fd, Name(key),
+                     peer.sent, peer.received);
+        }
+    }
+
+private:
+    static u64 Key(const Network::SockAddrIn* addr) {
+        if (addr == nullptr) {
+            return 0; // connected socket: one implicit peer
+        }
+        u64 ip = 0;
+        for (const u8 b : addr->ip) {
+            ip = (ip << 8) | b;
+        }
+        return (ip << 16) | addr->portno;
+    }
+
+    static std::string Name(u64 key) {
+        if (key == 0) {
+            return "(connected)";
+        }
+        return fmt::format("{}.{}.{}.{}:{}", (key >> 40) & 0xff, (key >> 32) & 0xff,
+                           (key >> 24) & 0xff, (key >> 16) & 0xff, key & 0xffff);
+    }
+
+    static std::string Name(const Network::SockAddrIn* addr) {
+        return Name(Key(addr));
+    }
+
+    static double Seconds(Clock::duration d) {
+        return std::chrono::duration<double>(d).count();
+    }
+
+    Peer* Find(const Network::SockAddrIn* addr) {
+        const u64 key = Key(addr);
+        if (const auto it = peers.find(key); it != peers.end()) {
+            return &it->second;
+        }
+        if (peers.size() >= MaxPeers) {
+            return nullptr;
+        }
+        return &peers[key];
+    }
+
+    void Report(Clock::time_point now) {
+        if (now - last_report < ReportEvery) {
+            return;
+        }
+        LOG_INFO(Service, "UDP fd={} last {:.0f} s: sent {} packets, received {}, {} peers", fd,
+                 Seconds(now - last_report), sent - sent_at_report, received - received_at_report,
+                 peers.size());
+        last_report = now;
+        sent_at_report = sent;
+        received_at_report = received;
+    }
+
+    s32 fd;
+    std::mutex mutex;
+    std::map<u64, Peer> peers;
+    Clock::time_point opened;
+    Clock::time_point last_report;
+    u64 sent = 0;
+    u64 sent_bytes = 0;
+    u64 received = 0;
+    u64 received_bytes = 0;
+    u64 sent_at_report = 0;
+    u64 received_at_report = 0;
+    u64 send_errors = 0;
+    u64 receive_errors = 0;
+};
 
 namespace {
 
@@ -845,6 +998,9 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     descriptor.socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
     descriptor.is_connection_based = IsConnectionBased(type);
     const bool is_connection_based = descriptor.is_connection_based;
+    if (type == Type::DGRAM) {
+        descriptor.udp = std::make_shared<UdpTraffic>(fd);
+    }
     {
         std::scoped_lock lk{file_descriptors_mutex};
         file_descriptors[fd] = std::move(descriptor);
@@ -1237,6 +1393,9 @@ std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& mess
         descriptor.socket->SetNonBlock(false);
     }
 
+    if (descriptor.udp) {
+        descriptor.udp->OnReceive(nullptr, ret, bsd_errno);
+    }
     return {ret, bsd_errno};
 }
 
@@ -1274,6 +1433,10 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
         descriptor.socket->SetNonBlock(false);
     }
 
+    if (descriptor.udp) {
+        descriptor.udp->OnReceive(p_addr_in, ret, bsd_errno);
+    }
+
     if (p_addr_in) {
         if (ret < 0) {
             addr.clear();
@@ -1296,7 +1459,11 @@ std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> m
         LOG_WARNING(Service, "Uninitialized socket");
         return {-1, Errno::BADF};
     }
-    return Translate(file_descriptors[fd]->socket->Send(message, flags));
+    const auto [ret, bsd_errno] = Translate(file_descriptors[fd]->socket->Send(message, flags));
+    if (const auto& udp = file_descriptors[fd]->udp) {
+        udp->OnSend(nullptr, ret, bsd_errno);
+    }
+    return {ret, bsd_errno};
 }
 
 std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
@@ -1318,7 +1485,12 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         p_addr_in = &addr_in;
     }
 
-    return Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    const auto [ret, bsd_errno] =
+        Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    if (const auto& udp = file_descriptors[fd]->udp) {
+        udp->OnSend(p_addr_in, ret, bsd_errno);
+    }
+    return {ret, bsd_errno};
 }
 
 Errno BSD_USA::CloseImpl(s32 fd) {
@@ -1336,6 +1508,9 @@ Errno BSD_USA::CloseImpl(s32 fd) {
     }
 
     LOG_INFO(Service, "Close socket fd={}", fd);
+    if (file_descriptors[fd]->udp) {
+        file_descriptors[fd]->udp->OnClose();
+    }
 
     std::scoped_lock lk{file_descriptors_mutex};
     file_descriptors[fd].reset();
@@ -1358,6 +1533,7 @@ std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
         .socket = file_descriptors[fd]->socket,
         .flags = file_descriptors[fd]->flags,
         .is_connection_based = file_descriptors[fd]->is_connection_based,
+        .udp = file_descriptors[fd]->udp,
     };
     return new_fd;
 }
