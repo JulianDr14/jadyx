@@ -95,6 +95,7 @@
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/pulse/pulse_store_gate.h"
 #include "jadyx/settings/uwp_system_settings.h"
+#include "jadyx/network/error_report.h"
 #include "jadyx/network/nextendo/bcat_sync.h"
 #include "jadyx/network/nextendo/service.h"
 #include "jadyx/network/online_rooms.h"
@@ -260,6 +261,7 @@ void GameSession::Shutdown() {
     if (config.gpu_failure_probe) WriteDiag("GPU recovery shutdown: HID unload");
     system.HIDCore().UnloadInputDevices();
     Common::BugTracker::RequestFlush(); // this game's summary, before the next one starts
+    Jadyx::ErrorReport::GameEnded();     // its bugs go to the collector in the background
     WriteDiag("step: shutdown complete");
 }
 
@@ -463,9 +465,18 @@ std::optional<int> GameSession::LoadGuest() {
     }
     ApplyGameLanguage(system);
     if (config.bug_tracker) {
+        const u64 id = system.GetApplicationProcessProgramID();
         std::string title;
         void(system.GetAppLoader().ReadTitle(title));
-        Common::BugTracker::SetTitle(system.GetApplicationProcessProgramID(), std::move(title));
+        Common::BugTracker::SetTitle(id, title);
+        // The version with the update applied, as the player sees it.
+        std::string version;
+        const FileSys::PatchManager patches{FileSys::GetBaseTitleID(id), system.GetFileSystemController(),
+                                            system.GetContentProvider()};
+        if (const auto control = patches.GetControlMetadata(); control.first) {
+            version = control.first->GetVersionString();
+        }
+        Jadyx::ErrorReport::GameStarted(id, std::move(title), std::move(version));
     }
     return std::nullopt;
 }
