@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <share.h>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <windows.h>
 
@@ -19,6 +21,7 @@
 #include "common/dynamic_library.h"
 #include "common/host_memory.h"
 #include "common/logging.h"
+#include "common/thread.h"
 #include "dynarmic/interface/code_memory.h"
 #include "jadyx/app/boot_crash.h"
 #include "jadyx/app/boot_diag.h"
@@ -30,6 +33,7 @@ namespace Jadyx {
 namespace {
 
 std::string FormatFaultStack(const CONTEXT& fault, const char* prefix);
+void ReportStackOverflow(const CONTEXT& fault);
 
 // Unhandled SEH (access violation, illegal instruction, breakpoint from a soft assert, ...) on any
 // thread. /EHsc catch(...) does not see these, which is why the boot worker's handlers stay silent.
@@ -40,31 +44,50 @@ LONG WINAPI OnUnhandledException(EXCEPTION_POINTERS* info) {
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + __ImageBase.e_lfanew);
     const auto addr = reinterpret_cast<uintptr_t>(rec->ExceptionAddress);
 
-    char where[64];
+    char where[160];
+    HMODULE module = nullptr;
     if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage) {
         std::snprintf(where, sizeof(where), "jadyx.exe+0x%llx",
                       static_cast<unsigned long long>(addr - base));
+    } else if (rec->ExceptionCode != EXCEPTION_STACK_OVERFLOW &&
+               GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                      GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                  static_cast<LPCSTR>(rec->ExceptionAddress), &module)) {
+        // A DLL: its name and offset (the driver's compiler, spirv_to_dxil, the runtime, ...).
+        char path[MAX_PATH] = "";
+        GetModuleFileNameA(module, path, MAX_PATH);
+        const char* name = std::strrchr(path, '\\');
+        std::snprintf(where, sizeof(where), "%s+0x%llx (0x%llx)", name ? name + 1 : path,
+                      static_cast<unsigned long long>(
+                          addr - reinterpret_cast<std::uintptr_t>(module)),
+                      static_cast<unsigned long long>(addr));
     } else {
         std::snprintf(where, sizeof(where), "0x%llx (outside jadyx.exe: JIT code or a DLL)",
                       static_cast<unsigned long long>(addr));
     }
 
-    char line[320];
+    char line[400];
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
         const ULONG_PTR kind = rec->ExceptionInformation[0];
         const char* what = kind == 0 ? "read of" : kind == 1 ? "write to" : "execute at";
         std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] CRASH: access violation at %s (%s 0x%llx), thread %lu\n",
+                      "[jadyx] [+%llums] CRASH: access violation at %s (%s 0x%llx), thread %lu "
+                      "(%s)\n",
                       ElapsedMs(), where, what,
                       static_cast<unsigned long long>(rec->ExceptionInformation[1]),
-                      GetCurrentThreadId());
+                      GetCurrentThreadId(), Common::GetCurrentThreadName());
     } else {
         std::snprintf(line, sizeof(line),
-                      "[jadyx] [+%llums] CRASH: exception 0x%08lx at %s, thread %lu\n",
+                      "[jadyx] [+%llums] CRASH: exception 0x%08lx at %s, thread %lu (%s)\n",
                       ElapsedMs(), static_cast<unsigned long>(rec->ExceptionCode), where,
-                      GetCurrentThreadId());
+                      GetCurrentThreadId(), Common::GetCurrentThreadName());
     }
     WriteDiagRaw(line);
+    if (rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        // No stack left here for the walk and the flushes below: the reporter thread does them.
+        ReportStackOverflow(*info->ContextRecord);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     // Before the stack: out of commit, the unwind can overflow the stack and lose both.
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
         char fault[512];
@@ -152,6 +175,104 @@ std::string FormatFaultStack(const CONTEXT& fault, const char* prefix) {
     return FormatFrames(prefix, frames, count);
 }
 
+// A stack overflow leaves the faulting thread a few KiB: on the console the CRASH line was the
+// last thing written, with no stack and the log never flushed. A thread started with the handlers
+// walks the faulting stack and flushes while the faulting thread waits for it.
+struct OverflowReport {
+    CONTEXT context;
+    HANDLE ready{};
+    HANDLE done{}; // manual reset: the first-chance and the unhandled handler both wait on it
+    std::atomic<bool> taken{false};
+};
+OverflowReport g_overflow;
+
+// The recursion fills the top of the stack with one function; the caller that started it is at
+// the bottom. Keeps both ends and the depth.
+void WriteOverflowStack(const CONTEXT& fault) {
+    constexpr size_t TOP = 12;
+    constexpr size_t BOTTOM = 36;
+    constexpr size_t MAX_DEPTH = 1u << 20;
+    void* top[TOP];
+    void* bottom[BOTTOM];
+    size_t depth = 0;
+    CONTEXT context = fault;
+    while (depth < MAX_DEPTH && context.Rip != 0) {
+        void* const frame = reinterpret_cast<void*>(context.Rip);
+        if (depth < TOP) {
+            top[depth] = frame;
+        }
+        bottom[depth % BOTTOM] = frame;
+        ++depth;
+        DWORD64 image_base{};
+        if (RUNTIME_FUNCTION* const function =
+                RtlLookupFunctionEntry(context.Rip, &image_base, nullptr)) {
+            void* handler_data{};
+            DWORD64 establisher{};
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
+                             &handler_data, &establisher, nullptr);
+        } else {
+            MEMORY_BASIC_INFORMATION region{};
+            if (context.Rsp == 0 ||
+                VirtualQuery(reinterpret_cast<const void*>(context.Rsp), &region,
+                             sizeof(region)) == 0 ||
+                region.State != MEM_COMMIT) {
+                break;
+            }
+            context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+            context.Rsp += 8;
+        }
+    }
+    const DWORD64 stack_used = context.Rsp > fault.Rsp ? context.Rsp - fault.Rsp : 0;
+    char line[160];
+    std::snprintf(line, sizeof(line),
+                  "[jadyx] stack overflow: %zu frames, %llu KiB of stack walked\n", depth,
+                  static_cast<unsigned long long>(stack_used >> 10));
+    WriteDiagRaw(line);
+    WriteDiagRaw(FormatFrames("[jadyx] stack overflow top:", top,
+                              static_cast<USHORT>((std::min)(depth, TOP)))
+                     .c_str());
+    if (depth > TOP) {
+        void* ordered[BOTTOM];
+        const size_t count = (std::min)(depth - TOP, BOTTOM);
+        for (size_t i = 0; i < count; ++i) {
+            ordered[i] = bottom[(depth - count + i) % BOTTOM];
+        }
+        WriteDiagRaw(FormatFrames("[jadyx] stack overflow bottom:", ordered,
+                                  static_cast<USHORT>(count))
+                         .c_str());
+    }
+}
+
+void RunOverflowReporter() {
+    WaitForSingleObject(g_overflow.ready, INFINITE);
+    WriteOverflowStack(g_overflow.context);
+    Common::BugTracker::DrainForCrash();
+    Common::Log::Stop();
+    SetEvent(g_overflow.done);
+}
+
+void ReportStackOverflow(const CONTEXT& fault) {
+    if (g_overflow.ready == nullptr) {
+        return;
+    }
+    if (!g_overflow.taken.exchange(true)) {
+        std::memcpy(&g_overflow.context, &fault, sizeof(CONTEXT));
+        SetEvent(g_overflow.ready);
+    }
+    WaitForSingleObject(g_overflow.done, 10000);
+}
+
+void StartOverflowReporter() {
+    g_overflow.ready = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+    g_overflow.done =
+        CreateEventExW(nullptr, nullptr, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS);
+    if (g_overflow.ready == nullptr || g_overflow.done == nullptr) {
+        g_overflow.ready = nullptr;
+        return;
+    }
+    std::thread(RunOverflowReporter).detach();
+}
+
 } // namespace
 
 std::string FormatFrames(const char* prefix, void* const* frames, USHORT count) {
@@ -237,7 +358,7 @@ const char* ProtectName(DWORD protect) {
 
 // "jadyx.exe+0xRVA" inside the image; otherwise the region's state/type/protection, which is what
 // tells JIT code (private RX), a code page left RW (W^X failure) and unmapped memory apart.
-void DescribeAddress(std::uintptr_t addr, char* out, std::size_t out_size) {
+void DescribeAddress(std::uintptr_t addr, char* out, std::size_t out_size, bool name_module) {
     const auto base = reinterpret_cast<std::uintptr_t>(&__ImageBase);
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + __ImageBase.e_lfanew);
     if (addr >= base && addr < base + nt->OptionalHeader.SizeOfImage) {
@@ -258,11 +379,24 @@ void DescribeAddress(std::uintptr_t addr, char* out, std::size_t out_size) {
                        : mbi.Type == MEM_MAPPED ? "mapped"
                        : mbi.Type == MEM_IMAGE  ? "image"
                                                 : "-";
-    std::snprintf(out, out_size, "0x%llx [%s %s %s, alloc base 0x%llx]",
+    // A DLL's name: "image RX" alone left a driver crash unattributed.
+    char module_name[96] = "";
+    if (name_module && mbi.Type == MEM_IMAGE && mbi.AllocationBase != nullptr) {
+        char path[MAX_PATH] = "";
+        if (GetModuleFileNameA(static_cast<HMODULE>(mbi.AllocationBase), path, MAX_PATH) != 0) {
+            const char* name = std::strrchr(path, '\\');
+            std::snprintf(module_name, sizeof(module_name), " %s+0x%llx",
+                          name ? name + 1 : path,
+                          static_cast<unsigned long long>(
+                              addr - reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
+        }
+    }
+    std::snprintf(out, out_size, "0x%llx [%s %s %s, alloc base 0x%llx]%s",
                   static_cast<unsigned long long>(addr), state, type,
                   mbi.State == MEM_COMMIT ? ProtectName(mbi.Protect) : "-",
                   static_cast<unsigned long long>(
-                      reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
+                      reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)),
+                  module_name);
 }
 
 // C++ throws are not failures by themselves, but one that escapes a thread other than the boot
@@ -332,8 +466,11 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
     default:
         break;
     }
-    char at[160];
-    DescribeAddress(reinterpret_cast<std::uintptr_t>(rec->ExceptionAddress), at, sizeof(at));
+    // A stack overflow leaves this thread a few KiB: no module lookup there, the reporter names it.
+    const bool stack_overflow = rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW;
+    char at[256];
+    DescribeAddress(reinterpret_cast<std::uintptr_t>(rec->ExceptionAddress), at, sizeof(at),
+                    !stack_overflow);
 
     char line[512];
     if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
@@ -341,7 +478,7 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
         const char* what = kind == 0 ? "read of" : kind == 1 ? "write to" : "execute at";
         char target[160];
         DescribeAddress(static_cast<std::uintptr_t>(rec->ExceptionInformation[1]), target,
-                        sizeof(target));
+                        sizeof(target), true);
         std::snprintf(line, sizeof(line),
                       "[jadyx] [+%llums] FIRST-CHANCE access violation: %s %s | at %s | "
                       "thread %lu\n",
@@ -370,16 +507,23 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
     } else {
         std::snprintf(line, sizeof(line),
                       "[jadyx] [+%llums] FIRST-CHANCE exception 0x%08lx | at %s | params %lu "
-                      "[0x%llx 0x%llx] | thread %lu\n",
+                      "[0x%llx 0x%llx] | thread %lu (%s)\n",
                       ElapsedMs(), static_cast<unsigned long>(rec->ExceptionCode), at,
                       static_cast<unsigned long>(rec->NumberParameters),
                       static_cast<unsigned long long>(
                           rec->NumberParameters > 0 ? rec->ExceptionInformation[0] : 0),
                       static_cast<unsigned long long>(
                           rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0),
-                      GetCurrentThreadId());
+                      GetCurrentThreadId(), Common::GetCurrentThreadName());
     }
     std::memcpy(t_last_exception, line, sizeof(t_last_exception));
+    if (stack_overflow) {
+        // Past the line budget too: the unhandled filter did not run for the first one seen on
+        // the console, so this is the only report it gets.
+        WriteDiagRaw(line, /*debugger_channel=*/false);
+        ReportStackOverflow(*ep->ContextRecord);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (g_first_chance_lines.fetch_add(1, std::memory_order_relaxed) < MAX_FIRST_CHANCE_LINES) {
         WriteDiagRaw(line, /*debugger_channel=*/false);
     }
@@ -423,6 +567,7 @@ void InstallFirstChanceLogger() {
 } // namespace
 
 void InstallCrashHandlers() {
+    StartOverflowReporter();
     InstallFirstChanceLogger();
     SetUnhandledExceptionFilter(OnUnhandledException);
     std::signal(SIGABRT, OnAbort);
