@@ -382,7 +382,7 @@ private:
     }
 
     Result Peek(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> out_size) {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
+        R_UNLESS(did_handshake, ResultInternalError);
         size_t tmp{};
         auto const res = backend->Peek(&tmp, data);
         *out_size = u32(tmp);
