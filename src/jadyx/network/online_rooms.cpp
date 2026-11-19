@@ -21,6 +21,7 @@
 
 #include "common/logging.h"
 #include "common/settings.h"
+#include "jadyx/app/boot_diag.h"
 #include "jadyx/network/http.h"
 #include "jadyx/network/room_ping.h"
 #include "network/network.h"
@@ -165,12 +166,15 @@ std::shared_ptr<RoomMember> BoundMember() {
                 break;
             }
             LOG_INFO(Network, "Online: room state {}", Network::GetStateStr(state));
+            // The diag survives several sessions; the log is overwritten on the next boot.
+            WriteDiag(fmt::format("online room: state {}", Network::GetStateStr(state)));
             Touch();
         });
         g_on_error = member->BindOnError([](const RoomMember::Error& error) {
             std::scoped_lock lock{g_mutex};
             g_status.failure = Translate(error);
             LOG_WARNING(Network, "Online: room error {}", Network::GetErrorStr(error));
+            WriteDiag(fmt::format("online room: error {}", Network::GetErrorStr(error)));
             Touch();
         });
         g_on_room = member->BindOnRoomInformationChanged(
@@ -200,6 +204,10 @@ std::shared_ptr<RoomMember> BoundMember() {
                 case Network::IdMemberBanned: kind = ChatKind::Banned; break;
                 default: return;
                 }
+                static constexpr const char* kVerbs[] = {"", "joined", "left", "was kicked",
+                                                         "was banned"};
+                WriteDiag(fmt::format("online room: {} {}", entry.nickname,
+                                      kVerbs[static_cast<u8>(entry.type)]));
                 std::scoped_lock lock{g_mutex};
                 g_chat.AddStatus(kind, entry.nickname);
             });
