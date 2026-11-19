@@ -390,7 +390,57 @@ private:
     }
 
     Result Poll(u32 in_pollevent, u32 timer, Out<u32> out_pollevent) {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
+        // nn::ssl PollEvent bits.
+        constexpr u32 PollRead = 1u << 0;
+        constexpr u32 PollWrite = 1u << 1;
+        constexpr u32 PollExcept = 1u << 2;
+
+        *out_pollevent = 0;
+        R_UNLESS(socket, ResultNoSocket);
+
+        // Decrypted bytes already buffered by OpenSSL are invisible to the socket.
+        if ((in_pollevent & PollRead) != 0 && backend->Pending() > 0) {
+            *out_pollevent = PollRead;
+            R_SUCCEED();
+        }
+
+        Network::PollEvents events{};
+        if ((in_pollevent & PollRead) != 0) {
+            events |= Network::PollEvents::In;
+        }
+        if ((in_pollevent & PollWrite) != 0) {
+            events |= Network::PollEvents::Out;
+        }
+        if ((in_pollevent & PollExcept) != 0) {
+            events |= Network::PollEvents::Pri;
+        }
+        std::vector<Network::PollFD> fds{{socket.get(), events, Network::PollEvents{}}};
+        const auto [count, err] = Network::Poll(fds, static_cast<s32>(timer));
+        if (err != Network::Errno::SUCCESS) {
+            LOG_ERROR(Service_SSL, "Poll failed with Network::Errno {}", err);
+            return ResultInternalError;
+        }
+        if (count == 0) {
+            return ResultTimeout;
+        }
+
+        const Network::PollEvents revents = fds[0].revents;
+        const bool hung_up =
+            True(revents & (Network::PollEvents::Hup | Network::PollEvents::Err));
+        u32 result = 0;
+        // A hang-up must wake a reader so it sees the close through Read.
+        if ((in_pollevent & PollRead) != 0 &&
+            (True(revents & (Network::PollEvents::In | Network::PollEvents::RdNorm)) || hung_up)) {
+            result |= PollRead;
+        }
+        if ((in_pollevent & PollWrite) != 0 && True(revents & Network::PollEvents::Out)) {
+            result |= PollWrite;
+        }
+        if ((in_pollevent & PollExcept) != 0 &&
+            (True(revents & (Network::PollEvents::Pri | Network::PollEvents::Nval)) || hung_up)) {
+            result |= PollExcept;
+        }
+        *out_pollevent = result;
         R_SUCCEED();
     }
 
