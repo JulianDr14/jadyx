@@ -331,6 +331,11 @@ if (MSVC)
     target_compile_options(jadyx PRIVATE /EHsc)
     # AppContainer executable: required for a sideloadable UWP package.
     target_link_options(jadyx PRIVATE /APPCONTAINER)
+    # 8 MiB stack reserve for every thread created with the default size (ours, the pipeline
+    # workers, and the driver's own). The driver's shader compiler recursed past the 1 MiB default
+    # on pixel shaders with large private arrays and the process died of a stack overflow. Only
+    # address space is reserved; pages are committed as the stack grows.
+    target_link_options(jadyx PRIVATE /STACK:8388608)
     # CRT bridge for the two bundled prebuilt deps that are /MT and have NO from-source path on Windows:
     # ffmpeg (Eden disables YUZU_USE_EXTERNAL_FFMPEG on WIN32) and SDL3. They inject /DEFAULTLIB:LIBCMT,
     # which the /MD Store-CRT app can't satisfy; ignoring it forces their CRT symbols onto the app's
