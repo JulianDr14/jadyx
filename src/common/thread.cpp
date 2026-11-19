@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <thread>
@@ -501,7 +502,16 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 #endif
 }
 
+namespace {
+thread_local char t_thread_name[32];
+} // Anonymous namespace
+
+const char* GetCurrentThreadName() {
+    return t_thread_name;
+}
+
 void SetCurrentThreadName(const char* name) {
+    std::strncpy(t_thread_name, name, sizeof(t_thread_name) - 1);
 #ifdef _MSC_VER
     // Sets the debugger-visible name of the current thread.
     if (auto pf = (decltype(&SetThreadDescription))(void*)GetProcAddress(GetModuleHandle(TEXT("KernelBase.dll")), "SetThreadDescription"); pf)

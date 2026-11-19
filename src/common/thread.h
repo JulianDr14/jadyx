@@ -145,6 +145,9 @@ enum class ThreadPlacement : u32 {
 
 void SetCurrentThreadPriority(ThreadPriority new_priority);
 void SetCurrentThreadName(const char* name);
+/// The name given by SetCurrentThreadName, or "" for a thread never named. Allocation free, for
+/// crash handlers.
+const char* GetCurrentThreadName();
 void SetCurrentThreadToPerformanceCores();
 void SetCurrentThreadToEfficiencyCores();
 void SetCurrentThreadToBackgroundWork();
