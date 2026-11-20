@@ -85,7 +85,10 @@ void SetSmallBcGuestPalette(bool enabled);   // d3d12_render_corrections.h
 void SetShaderDepthBias(bool enabled);       // d3d12_render_corrections.h
 void SetMemoryImportProbe(bool enabled);     // d3d12_memory_import_probe.h
 void SetPipelineEviction(bool enabled);      // d3d12_pipeline_cache.h
-void SetPipelinePrewarm(bool enabled);       // d3d12_pipeline_cache.h
+void SetPipelinePrewarm(bool enabled);
+void SetRetainMultiSessionWaits(bool enabled);
+void SetWaitPriorityCap(u32 cap);
+void SetHotKeepSessions(u32 sessions);       // d3d12_pipeline_cache.h
 void SetComputeWorkgroupSplit(u32 factor);   // d3d12_pipeline_cache.h
 void SetShuffleWaveUniform(bool enabled);    // d3d12_pipeline_cache.h
 void SetTextureRemap(bool enabled);          // d3d12_pipeline_cache.h

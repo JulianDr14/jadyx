@@ -816,17 +816,19 @@ GraphicsPipeline::GraphicsPipeline(const Device& device_,
             shader_notify->MarkShaderComplete();
         }
     }};
-    QueueBuild(worker_thread, std::move(func));
+    QueueBuild(worker_thread, std::move(func), worker_thread != nullptr && build_pso);
 }
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
-void GraphicsPipeline::QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job) {
+void GraphicsPipeline::QueueBuild(Common::ThreadWorker* worker, Common::UniqueFunction<void> job,
+                                  bool urgent) {
     if (!worker) {
         job();
         return;
     }
     auto build = std::make_shared<PendingBuild>();
+    build->urgent = urgent;
     build->queued_us = SteadyMicros();
     build->run = std::move(job);
     {
@@ -853,7 +855,10 @@ void GraphicsPipeline::RunClaimed(PendingBuild& build) {
     // be on it, and is undone here as well.
     thread_local const int home_priority = GetThreadPriority(GetCurrentThread());
     const HANDLE self = GetCurrentThread();
-    const int base = std::max(home_priority, OsBuildPriority(GetPipelineBuildBase()));
+    const int base_prio = build.urgent ? std::max(OsBuildPriority(GetPipelineBuildBase()),
+                                                  THREAD_PRIORITY_NORMAL)
+                                       : OsBuildPriority(GetPipelineBuildBase());
+    const int base = std::max(home_priority, base_prio);
     if (home_priority != THREAD_PRIORITY_ERROR_RETURN && GetThreadPriority(self) != base) {
         SetThreadPriority(self, base);
     }
@@ -938,7 +943,7 @@ bool GraphicsPipeline::Wake(Common::ThreadWorker& worker, bool for_draw) {
             }
         }
         Publish(out_of_memory ? State::Dormant : State::Ready);
-    });
+    }, for_draw);
     return true;
 }
 
