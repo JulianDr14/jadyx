@@ -249,6 +249,18 @@ std::optional<FormatInfo> DecodedBcFormat(PixelFormat format) {
     }
 }
 
+std::optional<FormatInfo> DecodedBcFormat(PixelFormat format, ImageType type) {
+    // Unsigned BC6H volumes as R11G11B10 (VideoCommon::PacksBc6hAsR11G11B10): half the bytes.
+    if (VideoCommon::PacksBc6hAsR11G11B10(format, type)) {
+        return FormatInfo{.resource = DXGI_FORMAT_R11G11B10_FLOAT,
+                          .view = DXGI_FORMAT_R11G11B10_FLOAT,
+                          .srv = DXGI_FORMAT_R11G11B10_FLOAT,
+                          .converted = true,
+                          .copy_format = PixelFormat::B10G11R11_FLOAT};
+    }
+    return DecodedBcFormat(format);
+}
+
 D3D12_RESOURCE_DIMENSION Dimension(ImageType type) {
     switch (type) {
     case ImageType::e1D: return D3D12_RESOURCE_DIMENSION_TEXTURE1D;

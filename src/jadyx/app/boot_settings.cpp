@@ -318,6 +318,7 @@ void ApplyBootConfig(const BootConfig& config, const BootSurface& surface, bool 
     Core::SetJitSharedCodeCache(config.jit_shared_cache);
     D3D12::SetAppMemoryQuery(QueryAppMemory);
     D3D12::SetBcArrayDecode(!config.bc_arrays_native);
+    D3D12::SetBc3dDecode(config.bc_3d_mode);
     D3D12::SetTextureMemoryCap(u64{config.texture_cap_mib} << 20);
     D3D12::SetTextureMemoryLine(
         u64{config.texture_cap_line_mib.value_or(config.guest_swap_watch_mib + 256)} << 20);
