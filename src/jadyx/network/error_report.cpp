@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -220,6 +221,35 @@ std::string Scrub(std::string_view text) {
     return out;
 }
 
+/// Whether a tracked bug belongs in a report. Only what points at an emulation gap: graphics and
+/// texture failures, unimplemented functions and failed asserts. HLE stubs (every game calls the
+/// same ones), input/loader/network chatter and renderer diagnostics stay in the local log. Runs
+/// once per ended game on the report thread, so it costs the game nothing.
+bool Worth(const Common::BugTracker::ReportEntry& entry) {
+    using Common::BugTracker::Category;
+    switch (entry.category) {
+    case Category::Unimplemented:
+    case Category::AssertFailed:
+    case Category::UnsupportedState:
+    case Category::UnsupportedFormat:
+    case Category::ShaderCompile:
+    case Category::PipelineRejected:
+    case Category::DrawSkipped:
+    case Category::CopySkipped:
+    case Category::ApiCallFailed:
+    case Category::DeviceRemoved:
+    case Category::NonFinite:
+    case Category::GpuHle:
+        return true;
+    case Category::Renderer:
+        // Renderer warnings are mostly trace output (readbacks, dispatch counters); keep errors.
+        return entry.location.find("readback_trace") == std::string::npos &&
+               (entry.message.starts_with("Error ") || entry.message.starts_with("Critical "));
+    default:
+        return false; // Stubbed, Other
+    }
+}
+
 std::string Build(const Game& game, const std::vector<Common::BugTracker::ReportEntry>& report) {
     nlohmann::json entries = nlohmann::json::array();
     for (const auto& entry : report) {
@@ -317,7 +347,10 @@ void GameEnded() {
         game = std::exchange(current_game, {});
     }
     if (game.title_id == 0) return;
-    auto report = Common::BugTracker::TakeReport(MaxEntries);
+    // Take every bug (this also re-arms the tracker), keep the worthwhile ones, then cap.
+    auto report = Common::BugTracker::TakeReport(std::numeric_limits<std::size_t>::max());
+    std::erase_if(report, [](const auto& entry) { return !Worth(entry); });
+    if (report.size() > MaxEntries) report.resize(MaxEntries);
     // Airplane mode: no network at all; the counts are dropped with the session.
     if (report.empty() || Settings::values.airplane_mode.GetValue()) return;
     WriteDiag(fmt::format("error report: {} distinct bugs for {:016X}, sending", report.size(),
