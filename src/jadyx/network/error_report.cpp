@@ -13,6 +13,10 @@
 #include <utility>
 #include <vector>
 
+#include <thread>
+
+#include <windows.h>
+
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 #include <winrt/Windows.ApplicationModel.h>
@@ -26,6 +30,7 @@
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/mods/work_queue.h"
 #include "jadyx/network/http.h"
+#include "video_core/perf_counters.h"
 
 namespace Jadyx::ErrorReport {
 namespace {
@@ -38,14 +43,93 @@ constexpr std::size_t MaxEntries = 200;
 constexpr std::size_t MaxMessage = 300;
 constexpr std::size_t MaxPending = 8;
 
+// Free memory under the app's limit below which a sample counts as memory pressure.
+constexpr std::uint64_t LowAppMemory = 512ULL << 20;
+
+std::uint64_t NowMs() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count());
+}
+
+/// Kernel + user time of every thread of the process, in microseconds.
+std::uint64_t ProcessCpuUs() {
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0;
+    const auto ticks = [](const FILETIME& t) {
+        return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+    };
+    return (ticks(kernel) + ticks(user)) / 10; // 100 ns ticks
+}
+
+/// GPU time of the submitted command lists (timestamps), in microseconds. Not whole-GPU
+/// utilization: the direct queue only.
+std::uint64_t GpuBusyUs() {
+    return VideoCore::Perf::counters[static_cast<std::size_t>(VideoCore::Perf::Counter::GpuBusyUs)]
+        .load(std::memory_order_relaxed);
+}
+
+/// A game's load: running totals at its start and at the last sample, and the peaks between
+/// samples.
+struct Load {
+    std::uint64_t start_ms = 0;
+    std::uint64_t start_cpu_us = 0;
+    std::uint64_t start_gpu_us = 0;
+    std::uint64_t last_ms = 0;
+    std::uint64_t last_cpu_us = 0;
+    std::uint64_t last_gpu_us = 0;
+    std::uint64_t app_peak = 0;
+    std::uint64_t app_limit = 0;
+    std::uint64_t app_low_ms = 0;
+    std::uint64_t gpu_mem_peak = 0;
+    std::uint64_t gpu_mem_budget = 0;
+    double cpu_peak_cores = 0.0;
+    double gpu_peak_pct = 0.0;
+};
+
 struct Game {
     std::uint64_t title_id = 0;
     std::string title;
     std::string version;
+    Load load;
 };
 
 std::mutex game_mutex;
 Game current_game;
+
+constexpr double MiB = 1024.0 * 1024.0;
+
+double Round1(double value) {
+    return static_cast<double>(static_cast<std::int64_t>(value * 10.0 + 0.5)) / 10.0;
+}
+
+/// The session's load as sent: averages over the whole game, peaks over 10 s windows.
+nlohmann::json DescribeLoad(const Load& load, std::uint64_t end_ms, std::uint64_t end_cpu_us,
+                            std::uint64_t end_gpu_us) {
+    if (end_ms <= load.start_ms) return nullptr;
+    const double seconds = static_cast<double>(end_ms - load.start_ms) / 1000.0;
+    const double cpu_avg =
+        end_cpu_us >= load.start_cpu_us
+            ? static_cast<double>(end_cpu_us - load.start_cpu_us) / 1e6 / seconds
+            : 0.0;
+    const double gpu_avg =
+        end_gpu_us >= load.start_gpu_us
+            ? static_cast<double>(end_gpu_us - load.start_gpu_us) / 1e4 / seconds
+            : 0.0;
+    return {
+        {"seconds", static_cast<std::uint64_t>(seconds)},
+        {"app_mem_peak_mib", static_cast<std::uint64_t>(load.app_peak / MiB)},
+        {"app_mem_limit_mib", static_cast<std::uint64_t>(load.app_limit / MiB)},
+        {"app_mem_low_seconds", load.app_low_ms / 1000},
+        {"gpu_mem_peak_mib", static_cast<std::uint64_t>(load.gpu_mem_peak / MiB)},
+        {"gpu_mem_budget_mib", static_cast<std::uint64_t>(load.gpu_mem_budget / MiB)},
+        {"cpu_threads", std::thread::hardware_concurrency()},
+        {"cpu_cores_avg", Round1(cpu_avg)},
+        {"cpu_cores_peak", Round1((std::max)(load.cpu_peak_cores, cpu_avg))},
+        {"gpu_busy_avg_pct", Round1(gpu_avg)},
+        {"gpu_busy_peak_pct", Round1((std::max)(load.gpu_peak_pct, gpu_avg))},
+    };
+}
 
 std::string AppVersion() {
     try {
@@ -250,7 +334,8 @@ bool Worth(const Common::BugTracker::ReportEntry& entry) {
     }
 }
 
-std::string Build(const Game& game, const std::vector<Common::BugTracker::ReportEntry>& report) {
+std::string Build(const Game& game, const std::vector<Common::BugTracker::ReportEntry>& report,
+                  nlohmann::json load) {
     nlohmann::json entries = nlohmann::json::array();
     for (const auto& entry : report) {
         std::string message = Scrub(entry.message);
@@ -272,6 +357,7 @@ std::string Build(const Game& game, const std::vector<Common::BugTracker::Report
         {"title", game.title},
         {"game_version", game.version},
         {"entries", std::move(entries)},
+        {"load", std::move(load)},
     };
     return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
@@ -336,8 +422,47 @@ void GameStarted(std::uint64_t title_id, std::string title, std::string version)
     if (!Enabled()) return; // a build without JADYX_REPORT_URL sends nothing
     // Bugs hit before the game (the library, a previous failed load) are not this game's.
     void(Common::BugTracker::TakeReport(0));
+    const std::uint64_t now = NowMs();
+    const std::uint64_t cpu = ProcessCpuUs();
+    const std::uint64_t gpu = GpuBusyUs();
     const std::scoped_lock lock{game_mutex};
-    current_game = {title_id, std::move(title), std::move(version)};
+    current_game = {title_id, std::move(title), std::move(version),
+                    Load{.start_ms = now, .start_cpu_us = cpu, .start_gpu_us = gpu,
+                         .last_ms = now, .last_cpu_us = cpu, .last_gpu_us = gpu}};
+}
+
+void SampleLoad(const Common::MemoryCeilings& ceilings) {
+    if (!Enabled()) return;
+    const std::uint64_t now = NowMs();
+    const std::uint64_t cpu = ProcessCpuUs();
+    const std::uint64_t gpu = GpuBusyUs();
+    const std::scoped_lock lock{game_mutex};
+    if (current_game.title_id == 0) return;
+    Load& load = current_game.load;
+    const std::uint64_t elapsed_ms = now - load.last_ms;
+    if (elapsed_ms > 0) {
+        const double seconds = static_cast<double>(elapsed_ms) / 1000.0;
+        if (cpu >= load.last_cpu_us) {
+            load.cpu_peak_cores = (std::max)(
+                load.cpu_peak_cores, static_cast<double>(cpu - load.last_cpu_us) / 1e6 / seconds);
+        }
+        if (gpu >= load.last_gpu_us) {
+            load.gpu_peak_pct = (std::max)(
+                load.gpu_peak_pct, static_cast<double>(gpu - load.last_gpu_us) / 1e4 / seconds);
+        }
+    }
+    if (const auto& app = ceilings[Common::MemoryCeiling::App]; app.Known()) {
+        load.app_peak = (std::max)(load.app_peak, app.used);
+        load.app_limit = app.limit;
+        if (app.Free() < LowAppMemory) load.app_low_ms += elapsed_ms;
+    }
+    if (const auto& gpu_mem = ceilings[Common::MemoryCeiling::Gpu]; gpu_mem.Known()) {
+        load.gpu_mem_peak = (std::max)(load.gpu_mem_peak, gpu_mem.used);
+        load.gpu_mem_budget = gpu_mem.limit;
+    }
+    load.last_ms = now;
+    load.last_cpu_us = cpu;
+    load.last_gpu_us = gpu;
 }
 
 void GameEnded() {
@@ -355,7 +480,8 @@ void GameEnded() {
     if (report.empty() || Settings::values.airplane_mode.GetValue()) return;
     WriteDiag(fmt::format("error report: {} distinct bugs for {:016X}, sending", report.size(),
                           game.title_id));
-    Queue().Post([body = Build(game, report)](std::stop_token stop) {
+    auto load = DescribeLoad(game.load, NowMs(), ProcessCpuUs(), GpuBusyUs());
+    Queue().Post([body = Build(game, report, std::move(load))](std::stop_token stop) {
         const auto folder = PendingFolder();
         if (!Post(body, stop)) {
             Keep(folder, body);
