@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
 #include "jadyx/library/controller_sections.h"
+#include "jadyx/app/boot_diag.h"
 #include "jadyx/input/dsu_client.h"
 #include "jadyx/input/dsu_text.h"
+#include "core/file_sys/common_funcs.h"
+#include "jadyx/network/nextendo/service.h"
+#include "jadyx/network/room_ping.h"
 
 namespace Jadyx {
 using I18n::Tr;
@@ -115,6 +119,9 @@ void LibrarySession::SwitchTab(LibraryTab to) {
         PollOnline();
         // While this console hosts a room, the tab opens on it.
         if (OnlineHosting(online_page.status)) online_page.host = true;
+        // While play goes through Nextendo, the tab opens on Nextendo instead of the rooms.
+        else if (Network::Nextendo::ServicePreferences().use_nextendo && !online_page.nextendo)
+            ShowOnlineNetwork(true);
         // The public list downloads when the tab first opens, and again after a failure; the
         // refresh button downloads it whenever asked.
         if (online_page.lobby.state == Online::LobbyState::Empty || online_page.lobby.state == Online::LobbyState::Failed)
@@ -183,9 +190,10 @@ bool LibrarySession::HandleSystemPage(TimePoint now) {
             };
             send(Up, SystemInput::Up);
             send(Down, SystemInput::Down);
-            const bool opens = system_page.selected == SystemPage::UserName ||
+            const bool opens = !system_page.stats_open &&
+                               (system_page.selected == SystemPage::UserName || system_page.selected == SystemPage::PerformanceStats ||
                                system_page.selected == SystemPage::ClearCache || system_page.selected == SystemPage::Updates ||
-                               system_page.selected == SystemPage::MiiEditor;
+                               system_page.selected == SystemPage::MiiEditor);
             send(Left, opens ? SystemInput::Back : SystemInput::Left);
             send(Right, SystemInput::Right);
             send(Play, SystemInput::Confirm);
@@ -299,6 +307,7 @@ void LibrarySession::OpenHomeCategory() {
     default:
         system_page.open = true;
         system_page.selected = SystemPage::UserName;
+        system_page.stats_open = false;
         system_page.notice.clear();
         // Windows' language or region may have changed since the library opened.
         system_page.locale = DetectSystemLocale();
@@ -646,11 +655,19 @@ void LibrarySession::PollOnline() {
         dirty = true;
     }
     PollOnlineChat();
+    PollNextendo();
     if (tab != LibraryTab::Online) return;
     auto lobby = Online::Lobby();
     if (lobby.version != online_page.lobby.version) {
-        online_page.lobby = std::move(lobby);
         auto& page = online_page;
+        // The focus stays on its room when the list reorders (pings arrive) or refreshes.
+        const auto* focused = OnlineRoomAt(page, OnlineInRooms(page) ? page.selected : OnlinePage::FixedRows + page.last_room);
+        const auto moved = focused ? Online::FindRoom(lobby.rooms, *focused) : std::nullopt;
+        page.lobby = std::move(lobby);
+        if (moved) {
+            if (OnlineInRooms(page)) page.selected = OnlinePage::FixedRows + *moved;
+            page.last_room = *moved;
+        }
         const std::size_t rooms = page.lobby.rooms.size();
         page.last_room = rooms ? std::min(page.last_room, rooms - 1) : 0;
         // A list that shrank under the focus hands it to its last room, or back to the form.
@@ -668,6 +685,22 @@ void LibrarySession::HandleOnlinePage(TimePoint now) {
         return;
     }
     auto& page = online_page;
+    // LT/RT (PgUp/PgDn) swap the view between Eden rooms and Nextendo.
+    if (actions & (PreviousManagerTab | NextManagerTab)) {
+        ShowOnlineNetwork(!page.nextendo);
+        system_page.notice.clear();
+        system_notice_until = now;
+        dirty = true;
+        actions &= Panel;
+        return;
+    }
+    if (page.nextendo) {
+        HandleNextendoPage(now);
+        dirty = true;
+        // A game the list starts keeps A for StartValidation.
+        actions &= nextendo_launch ? (Panel | Play) : Panel;
+        return;
+    }
     if (page.in_chat) {
         HandleOnlineChat();
         dirty = true;
@@ -788,6 +821,7 @@ void LibrarySession::HandleOnlineHost(TimePoint now) {
 }
 
 void LibrarySession::HostOnline(TimePoint now) {
+    if (RoomsRefused(now)) return;
     const auto& user = system_page.settings.user_name;
     const std::wstring_view name = user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user};
     const auto& page = online_page;
@@ -835,6 +869,13 @@ void LibrarySession::OpenOnlineEditor(EditorPurpose purpose) {
         // "a.b.c.d:port" at most.
         max_length = 21;
         break;
+    case EditorPurpose::NextendoServer:
+    case EditorPurpose::NextendoNat: {
+        const auto& prefs = online_page.nx.preferences;
+        initial = OnlineWiden(purpose == EditorPurpose::NextendoServer ? prefs.server_ip : prefs.nat_ip);
+        max_length = 15; // "255.255.255.255"
+        break;
+    }
     default: break;
     }
     system_page.name_editor.emplace(std::move(initial), max_length, NumericEditor(purpose));
@@ -922,6 +963,23 @@ void LibrarySession::FinishOnlineEditor(bool accept, TimePoint now) {
         }
         dsu_status = DsuClient::Status();
         break;
+    case EditorPurpose::NextendoServer:
+    case EditorPurpose::NextendoNat: {
+        // Saved by the service with the rest of its choices, not with the rooms' fields.
+        save = false;
+        const auto address = Network::Nextendo::CleanAddress(OnlineNarrow(value));
+        if (!address) {
+            system_page.editor_notice = Tr(T::NxBadAddress);
+            return;
+        }
+        auto prefs = Network::Nextendo::ServicePreferences();
+        (system_page.editor_purpose == EditorPurpose::NextendoServer ? prefs.server_ip : prefs.nat_ip) = *address;
+        Network::Nextendo::SetEndpoints(prefs.server_ip, prefs.nat_ip, prefs.tls_mode);
+        system_page.notice = Tr(T::SettingsSaved);
+        system_notice_until = now + std::chrono::seconds{3};
+        PollNextendo();
+        break;
+    }
     case EditorPurpose::UserName: break;
     }
     system_page.name_editor.reset();
@@ -1013,11 +1071,215 @@ void LibrarySession::SendOnlineChat(std::wstring_view text) {
 
 void LibrarySession::JoinOnline(const std::string& address, std::uint16_t port, const std::string& password,
                                 TimePoint now) {
+    if (RoomsRefused(now)) return;
     const auto& user = system_page.settings.user_name;
     Online::Join(OnlineNickname(online_page, user.empty() ? std::wstring_view{DefaultUserName} : std::wstring_view{user}),
                  address, port, password);
     system_page.notice.clear();
     system_notice_until = now;
+}
+
+bool LibrarySession::RoomsRefused(TimePoint now) {
+    if (Network::Nextendo::RoomsAllowed()) return false;
+    system_page.notice = Tr(T::NxRoomsPaused);
+    system_notice_until = now + std::chrono::seconds{4};
+    return true;
+}
+
+// The Nextendo view. The service runs on its own thread; the tab copies its state when it
+// changes, and the games list is made again when the catalog or the library's games change.
+void LibrarySession::PollNextendo() {
+    namespace Nx = Network::Nextendo;
+    const bool shown = tab == LibraryTab::Online && online_page.nextendo;
+    if (shown != nextendo_shown) {
+        nextendo_shown = shown;
+        Nx::ShowingNextendo(shown);
+    }
+    // The portal a sign-in started closes once it is over, a few seconds later so the browser
+    // still reads that it worked; never under an upload.
+    // While a sign-in waits, the QR code always holds a code that pairs: a new one when the last
+    // expired or paired a browser, unless that browser is in the middle of an upload.
+    if (shown && !Nx::SignInUrl().empty()) {
+        const auto status = network_portal.Status();
+        if (status.running && status.code_expired && status.transfer.id.empty() && status.content.id.empty() &&
+            network_portal.RenewCode()) {
+            configuration.network = network_portal.Status();
+            dirty = true;
+        }
+    }
+    if (nextendo_portal) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!Nx::SignInUrl().empty()) {
+            nextendo_portal_close = {};
+        } else if (nextendo_portal_close == std::chrono::steady_clock::time_point{}) {
+            nextendo_portal_close = now + std::chrono::seconds{5};
+        } else if (now >= nextendo_portal_close) {
+            nextendo_portal = false;
+            nextendo_portal_close = {};
+            const auto status = network_portal.Status();
+            if (status.running && status.transfer.id.empty() && status.content.id.empty() && !configuration.busy) {
+                network_portal.Stop();
+                configuration.network = network_portal.Status();
+                dirty = true;
+            }
+        }
+    }
+    // The account on every tab: the header shows its name and picture and marks the Online tab.
+    auto& page = online_page.nx;
+    const std::uint64_t version = Nx::ServiceVersion();
+    if (version != page.version) {
+        page.version = version;
+        page.preferences = Nx::ServicePreferences();
+        page.view = Nx::ServiceView();
+        page.avatar = Nx::ServiceAvatar();
+        dirty = true;
+    }
+    if (tab != LibraryTab::Online) return;
+    std::size_t titles = 0;
+    for (const auto& entry : scan.entries) titles += entry.program_id != 0;
+    // A rescan that moved the games under the rows makes them again too.
+    bool moved = false;
+    for (std::size_t row = 0; row < page.entries.size() && !moved; ++row)
+        moved = page.entries[row] != NextendoPage::NoEntry &&
+                NextendoRowEntry(page, row, scan.entries) == NextendoPage::NoEntry;
+    if (version == page.games_version && titles == page.library_titles && !moved) return;
+    page.games_version = version;
+    page.library_titles = titles;
+    // A few hundred rows at most, and only when something changed: made again whole.
+    std::vector<Nx::InstalledTitle> installed;
+    std::vector<std::size_t> installed_entry;
+    installed.reserve(titles);
+    installed_entry.reserve(titles);
+    for (std::size_t i = 0; i < scan.entries.size(); ++i) {
+        const auto& entry = scan.entries[i];
+        if (entry.program_id == 0) continue;
+        installed.push_back({FileSys::GetBaseTitleID(entry.program_id), OnlineNarrow(entry.name),
+                             OnlineNarrow(entry.display_version)});
+        installed_entry.push_back(i);
+    }
+    page.games = Nx::BuildCatalogRows(Nx::ServiceCatalog(), installed);
+    // Each installed row's game in the scan: the first entry of its title, the base game first.
+    page.entries.assign(page.games.size(), NextendoPage::NoEntry);
+    for (std::size_t row = 0; row < page.games.size(); ++row) {
+        if (!page.games[row].installed) continue;
+        for (std::size_t i = 0; i < installed.size(); ++i) {
+            if (installed[i].title_id != page.games[row].title_id) continue;
+            const auto entry = installed_entry[i];
+            auto& chosen = page.entries[row];
+            if (chosen == NextendoPage::NoEntry ||
+                (scan.entries[entry].program_id == page.games[row].title_id &&
+                 scan.entries[chosen].program_id != page.games[row].title_id))
+                chosen = entry;
+        }
+    }
+    page.game = page.games.empty() ? 0 : std::min(page.game, page.games.size() - 1);
+    if (page.games.empty()) page.in_games = false;
+    dirty = true;
+}
+
+void LibrarySession::ShowOnlineNetwork(bool nextendo) {
+    auto& page = online_page;
+    page.nextendo = nextendo;
+    page.in_chat = false;
+    page.nx.in_games = false;
+    PollNextendo();
+}
+
+void LibrarySession::HandleNextendoPage(TimePoint now) {
+    namespace Nx = Network::Nextendo;
+    auto& page = online_page.nx;
+    const auto say = [&](T text) {
+        system_page.notice = Tr(text);
+        system_notice_until = now + std::chrono::seconds{3};
+    };
+    if (actions & Quit) {
+        // While the console waits for the phone, B stops waiting; otherwise it leaves the tab.
+        if (page.view.phase == Nx::Phase::SigningIn) {
+            Nx::CancelSignIn();
+            PollNextendo();
+            return;
+        }
+        SwitchTab(LibraryTab::Home);
+        return;
+    }
+    if (actions & Refresh) Nx::RefreshCatalog();
+    if (page.in_games) {
+        if (actions & Up && page.game > 0) page.game--;
+        if (actions & Down && page.game + 1 < page.games.size()) page.game++;
+        if (actions & Left) page.in_games = false;
+        // A on an installed game starts it, as from Home: the library's check runs first.
+        if (actions & Play) {
+            const auto entry = NextendoRowEntry(page, page.game, scan.entries);
+            if (entry != NextendoPage::NoEntry) {
+                selected = entry;
+                nextendo_launch = true;
+            } else {
+                say(T::NxGameNotInstalled);
+            }
+        }
+        return;
+    }
+    if (actions & Up && page.selected > 0) page.selected--;
+    if (actions & Down && page.selected + 1 < NextendoPage::Rows) page.selected++;
+    if (actions & Right && !page.games.empty()) {
+        page.in_games = true;
+        return;
+    }
+    // On an address row: Y shows or hides both addresses, Menu puts the project's one back.
+    if (const auto fallback = DefaultAddress(page.selected); !fallback.empty()) {
+        if (actions & Pin) {
+            page.show_addresses = !page.show_addresses;
+            return;
+        }
+        if (actions & Options) {
+            auto prefs = Nx::ServicePreferences();
+            (page.selected == NextendoPage::ServerIp ? prefs.server_ip : prefs.nat_ip) = std::string(fallback);
+            Nx::SetEndpoints(prefs.server_ip, prefs.nat_ip, prefs.tls_mode);
+            say(T::NxAddressRestored);
+            PollNextendo();
+            return;
+        }
+    }
+    if (!(actions & Play)) return;
+    switch (page.selected) {
+    case NextendoPage::Account:
+        if (NextendoSignedIn(page)) {
+            Nx::SignOut();
+        } else if (page.view.phase == Nx::Phase::SignedOut) {
+            // The console can't show the sign-in page: it is finished in a browser on the
+            // network, through the portal, which opens for it.
+            if (!network_portal.Status().running) {
+                if (StartPortal()) nextendo_portal = true;
+            }
+            configuration.network = network_portal.Status();
+            if (!configuration.network.running) {
+                say(T::NxPhoneNoPortal);
+                break;
+            }
+            Nx::SignIn();
+        } else {
+            WriteDiag("nextendo: sign-in pressed in phase " + std::to_string(static_cast<int>(page.view.phase)));
+        }
+        break;
+    case NextendoPage::UseNextendo: {
+        const bool on = !page.preferences.use_nextendo;
+        if (!Nx::ChooseNextendo(on)) {
+            say(T::NxGameRunning);
+            break;
+        }
+        say(on ? T::NxChosen : T::NxRoomsChosen);
+        break;
+    }
+    case NextendoPage::ServerIp: OpenOnlineEditor(EditorPurpose::NextendoServer); break;
+    case NextendoPage::NatIp: OpenOnlineEditor(EditorPurpose::NextendoNat); break;
+    case NextendoPage::TlsMode: {
+        const auto prefs = Nx::ServicePreferences();
+        Nx::SetEndpoints(prefs.server_ip, prefs.nat_ip, NextTlsMode(prefs.tls_mode));
+        break;
+    }
+    default: break;
+    }
+    PollNextendo();
 }
 
 } // namespace Jadyx

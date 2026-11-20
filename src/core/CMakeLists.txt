@@ -409,6 +409,8 @@ add_library(core STATIC
     hle/service/acc/async_context.cpp
     hle/service/acc/async_context.h
     hle/service/acc/errors.h
+    hle/service/acc/nextendo_acc.cpp
+    hle/service/acc/nextendo_acc.h
     hle/service/acc/profile_manager.cpp
     hle/service/acc/profile_manager.h
     hle/service/am/am.cpp
@@ -1079,6 +1081,8 @@ add_library(core STATIC
     hle/service/sockets/bsd.h
     hle/service/sockets/nsd.cpp
     hle/service/sockets/nsd.h
+    hle/service/sockets/nextendo_dns.cpp
+    hle/service/sockets/nextendo_dns.h
     hle/service/sockets/sfdnsres.cpp
     hle/service/sockets/sfdnsres.h
     hle/service/sockets/sockets.cpp
@@ -1139,6 +1143,8 @@ add_library(core STATIC
     hle/service/wlan/wlan.h
     internal_network/emu_net_state.cpp
     internal_network/emu_net_state.h
+    internal_network/event_fd.cpp
+    internal_network/event_fd.h
     internal_network/network.cpp
     internal_network/network.h
     internal_network/network_interface.cpp
@@ -1176,6 +1182,21 @@ add_library(core STATIC
     memory/dmnt_cheat_types.h
     memory/dmnt_cheat_vm.cpp
     memory/dmnt_cheat_vm.h
+    online/nextendo/address_book.cpp
+    online/nextendo/address_book.h
+    online/nextendo/catalog.cpp
+    online/nextendo/catalog.h
+    online/nextendo/config.cpp
+    online/nextendo/config.h
+    online/nextendo/encoding.cpp
+    online/nextendo/encoding.h
+    online/nextendo/host_rules.cpp
+    online/nextendo/host_rules.h
+    online/nextendo/id_token.cpp
+    online/nextendo/id_token.h
+    online/nextendo/trust_roots.inc
+    online/nextendo/trust_store.cpp
+    online/nextendo/trust_store.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp

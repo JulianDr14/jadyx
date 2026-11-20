@@ -158,6 +158,10 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case WSAEISCONN:
         return Errno::ISCONN;
+    case WSAEADDRINUSE:
+        return Errno::ADDRINUSE;
+    case WSAEADDRNOTAVAIL:
+        return Errno::ADDRNOTAVAIL;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", e);
         return Errno::OTHER;
@@ -299,6 +303,10 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case EISCONN:
         return Errno::ISCONN;
+    case EADDRINUSE:
+        return Errno::ADDRINUSE;
+    case EADDRNOTAVAIL:
+        return Errno::ADDRNOTAVAIL;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;
@@ -565,6 +573,7 @@ int TranslateTypeToNative(Type type) {
 #elif defined(_WIN32)
 #define NETWORK_PROTOCOL_TRANSLATE_LIST \
     /*NETWORK_PROTOCOL_TRANSLATE_ELEM(HOPOPTS)*/ \
+    NETWORK_PROTOCOL_TRANSLATE_ELEM(IP) \
     NETWORK_PROTOCOL_TRANSLATE_ELEM(ICMP) \
     NETWORK_PROTOCOL_TRANSLATE_ELEM(IGMP) \
     NETWORK_PROTOCOL_TRANSLATE_ELEM(GGP) \
@@ -952,6 +961,16 @@ Errno Socket::Shutdown(ShutdownHow how) {
     return GetAndLogLastError();
 }
 
+// Winsock fails a datagram receive that does not fit the buffer with WSAEMSGSIZE, after filling
+// the buffer. BSD sockets, like the Switch, hand back the truncated datagram as a normal receive.
+[[nodiscard]] static bool IsTruncatedDatagram() {
+#ifdef _WIN32
+    return WSAGetLastError() == WSAEMSGSIZE;
+#else
+    return false;
+#endif
+}
+
 std::pair<s32, Errno> Socket::Recv(int flags, std::span<u8> message) {
     ASSERT(flags == 0);
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
@@ -960,6 +979,9 @@ std::pair<s32, Errno> Socket::Recv(int flags, std::span<u8> message) {
         recv(fd, reinterpret_cast<char*>(message.data()), static_cast<int>(message.size()), 0);
     if (result != SOCKET_ERROR) {
         return {static_cast<s32>(result), Errno::SUCCESS};
+    }
+    if (IsTruncatedDatagram()) {
+        return {static_cast<s32>(message.size()), Errno::SUCCESS};
     }
 
     return {-1, GetAndLogLastError()};
@@ -981,6 +1003,12 @@ std::pair<s32, Errno> Socket::RecvFrom(int flags, std::span<u8> message, SockAdd
             *addr = TranslateToSockAddrIn(addr_in, addrlen);
         }
         return {static_cast<s32>(result), Errno::SUCCESS};
+    }
+    if (IsTruncatedDatagram()) {
+        if (addr) {
+            *addr = TranslateToSockAddrIn(addr_in, addrlen);
+        }
+        return {static_cast<s32>(message.size()), Errno::SUCCESS};
     }
 
     return {-1, GetAndLogLastError()};

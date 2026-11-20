@@ -18,6 +18,7 @@
 #include "jadyx/app/boot_renderer_decls.h"
 #include "jadyx/app/boot_state.h"
 #include "jadyx/app/session_memory.h"
+#include "jadyx/network/error_report.h"
 
 namespace Jadyx {
 
@@ -232,6 +233,7 @@ void SessionMemory::Tick(u32 tick, bool menu_open) {
     // and every 10 s while it has less than 768 MiB free.
     if (tick % (10 * TICKS_PER_SECOND) == 0) {
         const Common::MemoryCeilings ceilings = QueryMemoryCeilings();
+        ErrorReport::SampleLoad(ceilings); // the error report's session load
         ceiling_trends.Add(
             static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())

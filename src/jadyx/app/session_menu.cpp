@@ -28,6 +28,8 @@
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_d3d12/d3d12_async_pipelines.h"
 
+#include "jadyx/network/nextendo/service.h"
+#include "jadyx/network/nextendo/link_monitor.h"
 #include "jadyx/network/online_rooms.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/app/boot_renderer_decls.h"
@@ -99,6 +101,8 @@ void SessionMenu::DrawMenu() {
         std::wstring room;
         if (online.phase == Online::Phase::Joined)
             room = Common::UTF8ToUTF16W(online.room_name.empty() ? online.address : online.room_name);
+        else if (const auto link = Network::Nextendo::LinkMonitorSnapshot())
+            room = Network::Nextendo::LinkPillText(*link).text; // "Nextendo · 34 ms"
         const bool dropped = online.phase == Online::Phase::Idle && (online.failure == Online::Failure::LostConnection ||
                                                                      online.failure == Online::Failure::Kicked);
         // Memory Edit reads its numbers on the stopped game, so it keeps the whole screen.
@@ -172,7 +176,8 @@ void SessionMenu::KeyboardPress(std::optional<KeyboardReply> reply) {
 }
 
 void SessionMenu::Open() {
-    live = Online::InRoom();
+    // In a room, or playing on Nextendo, the others keep playing: the game must not stop.
+    live = Online::InRoom() || Network::Nextendo::PlayingOnNextendo();
     if (!live) PauseGuest();
     input.SetMenuOpen(true);
     SetTextEntryActive(false); // The real keyboard drives the menu.
@@ -199,6 +204,9 @@ void SessionMenu::Open() {
     if (!live) CaptureFrame();
     const SystemSettings system_settings = LoadSystemSettings();
     const GameMotion game_motion = input.Motion();
+    // Nextendo is the chosen network (frozen while the game runs): no cheats, no Memory Edit.
+    const bool fair_play = Network::Nextendo::ServicePreferences().use_nextendo;
+    const bool tools = program_id != 0 && !mii_editor && !fair_play;
     menu.emplace(GameMenuSettings{basics.style, basics.swap_face_buttons,
                                   basics.deadzone, g_can_fullscreen.load(),
                                   g_fullscreen.load(), system_settings.show_performance_stats,
@@ -207,7 +215,7 @@ void SessionMenu::Open() {
                                   live || !game_frame.pixels.empty(), LoadGameOfflineMode(program_id),
                                   system_settings.offline_mode, LoadGraphicsSettings(),
                                   LoadGameGraphics(program_id),
-                                  program_id != 0 && !mii_editor && MemoryEdit::CanSearchGuest(system),
+                                  tools && MemoryEdit::CanSearchGuest(system),
                                   options.right_stick, input.GameRightStickSettings(),
                                   program_id != 0 && !mii_editor, game_motion.mode, game_motion.view,
                                   config.glitch_hunt_menu, glitch_toggles,
@@ -216,15 +224,15 @@ void SessionMenu::Open() {
                                   D3D12::GetPipelineBuildBoost(), options.motion_source, options.motion_shake,
                                   options.rumble, input.GameRumbleSettings(),
                                   VideoCommon::GeoHunt::OobFix(), basics_global, basics_game, MousePresent()},
-                 program_id != 0 && !mii_editor);
+                 tools);
     if (memory_edit) menu->SetMemoryEditHits(memory_edit->Hits());
     // The DSU page lists the servers live while the menu is open, even with none added yet.
     DsuClient::SetWanted(DsuClient::Wanter::Menu, true);
     dsu_version = DsuClient::StatusVersion();
     menu->SetDsu(DsuClient::Status());
-    const bool from_notice = notice_shown;
+    const bool from_notice = notice_shown && notice_is_chat;
     HideChatNotice();
-    if (live) {
+    if (live && Online::InRoom()) {
         const auto chat = Online::Chat();
         menu->SetChat(chat.unread);
         chat_version = chat.version;
@@ -261,7 +269,8 @@ void SessionMenu::Open() {
                             ? Utf8ToUtf16(AmiiboDisplayName(input.Amiibo().GetLastFilePath()))
                             : std::wstring{});
     }
-    WriteDiag(std::string{"menu: opened, "} + (live ? "guest running (online room)" : "guest paused") +
+    WriteDiag(std::string{"menu: opened, "} + (live ? (Online::InRoom() ? "guest running (online room)" : "guest running (Nextendo)")
+                                                         : "guest paused") +
               " | " + MemoryReport());
     if (menu_surface) DrawMenu();
 }
@@ -517,7 +526,28 @@ void SessionMenu::ShowChatNotice(const Online::ChatSnapshot& chat) {
     if (image.width == 0) return;
     system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::move(image)); });
     notice_shown = true;
+    notice_is_chat = true;
     notice_until = std::chrono::steady_clock::now() + ChatNoticeTime;
+}
+
+void SessionMenu::ShowNotice(std::wstring_view title, std::wstring text, std::chrono::seconds seconds) {
+    if (menu || notice_shown) return; // never over the menu, nor over a chat message
+    const ChatMenuLine line{ChatMenuLine::Kind::Status, {}, std::move(text)};
+    D3D12::MenuImage image;
+    try {
+        if (!notice_surface) notice_surface.emplace();
+        ChatNoticeView view{{&line, 1}, 0};
+        view.title = title;
+        image = notice_surface->DrawChatNotice(view, D3D12::GameMenuScreenSize(system.Renderer()));
+    } catch (const winrt::hresult_error& e) {
+        WriteDiag("menu: notice not drawn: " + winrt::to_string(e.message()));
+        return;
+    }
+    if (image.width == 0) return;
+    system.GPU().RunOnGpuThread([&] { D3D12::ShowGameNotice(system.Renderer(), std::move(image)); });
+    notice_shown = true;
+    notice_is_chat = false;
+    notice_until = std::chrono::steady_clock::now() + seconds;
 }
 
 void SessionMenu::HideChatNotice() {
@@ -713,7 +743,7 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         auto settings = LoadSystemSettings();
         settings.show_performance_stats = menu->Settings().show_performance_stats;
         if (!SaveSystemSettings(settings)) WriteDiag("menu: statistics preference could not be saved");
-        VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
+        PublishStatsOverlay(settings.show_performance_stats, settings.stats);
     }
     if (result == GameMenuResult::FullScreen) {
         g_fullscreen_request.store(menu->Settings().fullscreen ? 1 : 0);
@@ -752,7 +782,8 @@ void SessionMenu::ApplyChoice(GameMenuResult result) {
         // Seen by the game's next network query; boot.cfg's airplane=1 still wins.
         if (!config.airplane_mode)
             Settings::values.airplane_mode.SetValue(offline.value_or(menu->Settings().offline_default) &&
-                                                    !Online::InRoom()); // A room needs the network.
+                                                    !Online::InRoom() && // A room needs the network,
+                                                    !Network::Nextendo::PlayingOnNextendo()); // Nextendo too.
         WriteDiag(std::string{"menu: offline mode "} +
                   (Settings::values.airplane_mode.GetValue() ? "on" : "off"));
     }

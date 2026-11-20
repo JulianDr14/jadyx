@@ -153,6 +153,8 @@ body.updating .tabs{visibility:hidden}body.updating #view-content,body.updating 
 .steps h3{margin-top:7px}.steps li:not(.done):not(.now) h3{color:var(--muted)}.steps p{margin-top:4px;max-width:36em}.steps .actions{margin-top:16px}
 a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px;border-radius:999px;border:1px solid var(--line);font-size:14px;font-weight:600;
  color:var(--hint);text-decoration:none}a.pill:hover{color:var(--text);border-color:rgba(255,255,255,.3)}a.pill .ico{width:16px;height:16px}
+a.pill#nx-open{color:var(--canvas);background:var(--text);border-color:transparent}
+#nx-note{margin-top:4px}#nx-note:empty{display:none}#nx-url{width:100%}
 .keep{padding:14px 16px;border-radius:14px;color:var(--warn);background:rgba(240,194,122,.08);border:1px solid rgba(240,194,122,.24)}
 #update-skip{margin:24px 0 0;align-self:center}.update-foot{display:flex;justify-content:center}
 .installing{padding:24px 0 8px;text-align:center}.installing p{max-width:30em;margin:10px auto 0}.installing button{margin-top:24px}
@@ -170,7 +172,7 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 <body><header class="bar"><div class="brand"><img src="/logo.png" alt="Jadyx" width="44" height="44"><span class="word">JADYX</span><span class="caps">Portal</span></div>
-<nav class="tabs" role="tablist"><button id="tab-games" role="tab" aria-selected="true">Games</button><button id="tab-amiibo" role="tab" aria-selected="false" hidden>Amiibo</button><button id="tab-system" role="tab" aria-selected="false">System</button></nav>
+<nav class="tabs" role="tablist"><button id="tab-games" role="tab" aria-selected="true">Games</button><button id="tab-amiibo" role="tab" aria-selected="false" hidden>Amiibo</button><button id="tab-nextendo" role="tab" aria-selected="false" hidden>Nextendo</button><button id="tab-system" role="tab" aria-selected="false">System</button></nav>
 <span class="link" role="status"><i></i><span class="status-off" id="status-off">Not connected</span><span class="status-on" id="status-on">Connected</span></span></header>
 <div class="shell"><p id="message" role="alert"></p>
 <main class="gate"><img src="/logo.png" alt="" width="132" height="132"><p class="kicker" id="kicker">Local network portal</p><h1 id="title">Connect to your console</h1>
@@ -239,6 +241,15 @@ a.pill{display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 20px
 <label class="drop"><input id="amiibo-key-file" type="file" accept=".bin"><svg class="ico" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>
 <strong id="amiibo-key-pick"></strong><span class="picked" id="amiibo-key-picked"></span></label>
 <div class="actions"><button id="amiibo-key-send" class="primary"></button><button class="danger" id="amiibo-key-remove"></button></div></div></section></div>
+<div class="view" id="view-nextendo" hidden><section class="card" id="nextendo"><p class="kicker">Nextendo</p><h1 id="nx-title"></h1><p id="nx-intro"></p>
+<ol class="steps" id="nx-steps">
+<li id="nx-step-1"><span class="n">1</span><div><h3 id="nx-s1"></h3><p id="nx-s1b"></p>
+<div class="actions"><a class="pill" id="nx-open" target="_blank" rel="noopener noreferrer" hidden><svg class="ico" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span id="nx-open-label"></span></a></div></div></li>
+<li id="nx-step-2"><span class="n">2</span><div><h3 id="nx-s2"></h3><p id="nx-s2b"></p></div></li>
+<li id="nx-step-3"><span class="n">3</span><div><h3 id="nx-s3"></h3>
+<div class="field"><label id="nx-label" for="nx-url"></label><input id="nx-url" maxlength="2048" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url" placeholder="http://127.0.0.1/callback?code=…"></div>
+<div class="actions"><button class="primary" id="nx-send"></button></div></div></li>
+</ol><p id="nx-note" role="status" aria-live="polite"></p></section></div>
 <div class="view" id="view-system" hidden><nav class="seg" role="tablist"><button id="cat-keys" role="tab" aria-selected="true">Keys</button><button id="cat-firmware" role="tab" aria-selected="false">Firmware</button><button id="cat-logs" role="tab" aria-selected="false" hidden>Logs</button></nav>
 <section id="system-upload" class="card" hidden><div class="head"><h2 id="system-title">Keys and firmware</h2><p id="system-intro">Everything is checked before installing. Your current files stay until you confirm.</p></div>
 <article class="sub" id="keys-pane"><h3 id="keys-title">Import keys</h3><p id="keys-help">ZIP or prod.keys / title.keys.</p>
@@ -314,11 +325,13 @@ const nav=pt?{add:'Adicionar jogos',uploading:'Envio em andamento'}:es?{add:'Añ
 for(const [id,text]of Object.entries(labels))$(id).textContent=text;
 if(es||pt)document.title='Portal Jadyx';
 // The header's tabs, one view each; one is shown.
-const tabs=[['tab-games','view-content'],['tab-amiibo','view-amiibo'],['tab-system','view-system']];
+const tabs=[['tab-games','view-content'],['tab-amiibo','view-amiibo'],['tab-nextendo','view-nextendo'],['tab-system','view-system']];
 function choose(group,chosen){for(const [button,view]of group){$(button).ariaSelected=String(button===chosen);$(view).hidden=button!==chosen;}}
 for(const [button]of tabs)$(button).addEventListener('click',()=>{
  const again=$(button).ariaSelected==='true';choose(tabs,button);$('message').textContent='';
  if(button==='tab-amiibo')loadAmiibo();
+ // A finished sign-in's answer stays until the player moves on.
+ if(button!=='tab-nextendo'&&nxDone){nxDone=false;renderNextendo();}
  // Games pressed again, from a game or from importing, is the way back to the library.
  if(button==='tab-games'&&again&&state.library){gameId='';armed='';choosePane('library');}
 });
@@ -379,6 +392,7 @@ function render(){
  renderSystem();
  renderLibrary();
  renderAmiibo();
+ renderNextendo();
 }
 // This page's version, filled in by the console when it serves it. A tab left open across a
 // Jadyx update keeps running the old page; the console names the page it serves now in the
@@ -397,6 +411,7 @@ async function refresh(){const response=await api('/api/v1/status');state=await 
 async function connected(token){
  session=token;$('code').value='';$('pair').hidden=true;$('connection').textContent=words.ok;
  await refresh();if(reloading)return;clearInterval(timer);let polling=false;
+ openLinked();
  // An upload left unfinished is what the player came back for.
  if(state.uploads&&state.transfer?.id&&state.transfer.phase!=='complete'){pane='games';render();}
  timer=setInterval(async()=>{if(polling)return;polling=true;try{await refresh();failures=0;$('connection').textContent=words.ok;}catch(error){
@@ -417,6 +432,19 @@ $('pair').addEventListener('submit',async event=>{
 // The session an older copy of this page handed over before reloading; read once, then gone.
 (()=>{let token='';try{token=sessionStorage.getItem('jadyx-session')||'';sessionStorage.removeItem('jadyx-session');}catch{}
  if(token)connected(token).catch(()=>{session='';$('pair').hidden=false;$('connection').textContent=words.lost;});})();
+// A link from the console's QR code: #pair=<code> connects this browser at once and #open=<tab>
+// then shows that tab. The fragment never reaches the network and leaves the address bar here,
+// so the code stays out of the history; it pairs once anyway.
+let linkedTab='';
+function openLinked(){
+ const tab={games:'tab-games',amiibo:'tab-amiibo',nextendo:'tab-nextendo',system:'tab-system'}[linkedTab];linkedTab='';
+ if(tab&&!$(tab).hidden&&$(tab).ariaSelected!=='true')$(tab).click();
+}
+(()=>{if(location.hash.length<2)return;const link=new URLSearchParams(location.hash.slice(1));
+ try{history.replaceState(null,'',location.pathname+location.search);}catch{}
+ linkedTab=link.get('open')||'';const code=(link.get('pair')||'').replace(/\D/g,'').slice(0,4);
+ if(code.length===4&&!session){$('code').value=code;$('pair').requestSubmit?.();}
+ else if(session)setTimeout(openLinked,0);})();
 // Only digits; the eighth one connects without reaching for the button.
 $('code').addEventListener('input',()=>{const code=$('code').value.replace(/\D/g,'').slice(0,4);$('code').value=code;
  if(code.length===4&&!$('connect').disabled)$('pair').requestSubmit?.();});
@@ -998,6 +1026,72 @@ $('amiibo-key-remove').addEventListener('click',async()=>{
  try{await api('/api/v1/amiibo/key',{method:'DELETE'});$('amiibo-note').textContent=amiiboWords.key_removed;}
  catch(error){$('amiibo-note').textContent=amiiboReason(error);}
  await loadAmiibo();
+});
+// Nextendo: the console waits for a sign-in it can't show. Its page opens here, and the address
+// that page ends on goes back to the console, which keeps the other half of the exchange.
+const nxWords=pt?{
+ 'nx-title':'Entre na Nextendo','nx-intro':'Seu console está esperando por você. Faça estes três passos aqui, neste celular ou computador.',
+ 'nx-s1':'Entre e aceite','nx-s1b':'A página da Nextendo abre numa nova aba. Entre nela e aceite o Jadyx. O Jadyx nunca vê sua senha.','nx-open-label':'Abrir Nextendo',
+ 'nx-s2':'Copie o endereço','nx-s2b':'Depois essa aba mostra uma página de erro: é normal. Copie o endereço completo da barra de endereços; ele começa com http://127.0.0.1/callback.',
+ 'nx-s3':'Cole aqui','nx-label':'Endereço dessa página','nx-send':'Concluir a entrada',
+ empty:'Cole o endereço primeiro.',address:'Esse não é o endereço dessa página. Copie o endereço completo, do http:// até o final.',
+ state:'Esse endereço é de uma tentativa anterior. Abra a Nextendo de novo no passo 1.',none:'O console não está mais esperando. Escolha Entrar no console de novo.',
+ denied:'Você não aceitou o Jadyx, então o console continua sem conta.',refused:'A Nextendo recusou a entrada. Tente de novo pelo console.',
+ done:'Pronto. Olhe o console: ele entra sozinho.',unavailable:'A entrada não está disponível no momento.'
+}:es?{
+ 'nx-title':'Inicia sesión en Nextendo','nx-intro':'Tu consola te está esperando. Haz estos tres pasos aquí, en este móvil u ordenador.',
+ 'nx-s1':'Inicia sesión y acepta','nx-s1b':'La página de Nextendo se abre en una pestaña nueva. Inicia sesión ahí y acepta a Jadyx. Jadyx nunca ve tu contraseña.','nx-open-label':'Abrir Nextendo',
+ 'nx-s2':'Copia la dirección','nx-s2b':'Después esa pestaña muestra una página de error: es normal. Copia la dirección completa de su barra de direcciones; empieza por http://127.0.0.1/callback.',
+ 'nx-s3':'Pégala aquí','nx-label':'Dirección de esa página','nx-send':'Terminar el inicio de sesión',
+ empty:'Primero pega la dirección.',address:'Esa no es la dirección de esa página. Copia la dirección completa, desde http:// hasta el final.',
+ state:'Esa dirección es de un intento anterior. Vuelve a abrir Nextendo desde el paso 1.',none:'La consola ya no está esperando. Vuelve a elegir Iniciar sesión en la consola.',
+ denied:'No aceptaste a Jadyx, así que la consola sigue sin sesión.',refused:'Nextendo rechazó el inicio de sesión. Vuelve a intentarlo desde la consola.',
+ done:'Listo. Mira la consola: inicia sesión sola.',unavailable:'El inicio de sesión no está disponible en este momento.'
+}:{
+ 'nx-title':'Sign in to Nextendo','nx-intro':'Your console is waiting for you. Do these three steps here, on this phone or computer.',
+ 'nx-s1':'Sign in and accept','nx-s1b':'The Nextendo page opens in a new tab. Sign in there and accept Jadyx. Jadyx never sees your password.','nx-open-label':'Open Nextendo',
+ 'nx-s2':'Copy the address','nx-s2b':'That tab then shows an error page: that is expected. Copy the whole address from its address bar; it starts with http://127.0.0.1/callback.',
+ 'nx-s3':'Paste it here','nx-label':'Address of that page','nx-send':'Finish signing in',
+ empty:'Paste the address first.',address:'That is not the address of that page. Copy the whole address, from http:// to the end.',
+ state:'That address is from an earlier attempt. Open Nextendo again from step 1.',none:'The console is no longer waiting. Choose Sign in on the console again.',
+ denied:'You did not accept Jadyx, so the console stays signed out.',refused:'Nextendo refused the sign-in. Try again from the console.',
+ done:'Done. Look at the console: it signs in by itself.',unavailable:'Sign-in is not available right now.'
+};
+for(const id of ['nx-title','nx-intro','nx-s1','nx-s1b','nx-open-label','nx-s2','nx-s2b','nx-s3','nx-label','nx-send'])$(id).textContent=nxWords[id];
+let nxUrl='',nxWaiting=false,nxDone=false,nxSending=false,nxOpened=false;
+function nxNote(text,problem){$('nx-note').textContent=text;$('nx-note').className=problem?'keep':'';}
+async function loadNextendo(){
+ try{nxUrl=(await(await api('/api/v1/nextendo')).json()).url||'';}
+ catch(error){nxUrl='';nxNote(nxWords[error.message]||words.interrupted,true);}
+ renderNextendo();
+}
+function renderNextendo(){
+ const waiting=!!session&&!!state.nextendo;
+ // The console just started waiting: that is what the player came here for.
+ if(waiting&&!nxWaiting){nxDone=false;nxOpened=false;nxNote('',false);$('nx-url').value='';choose(tabs,'tab-nextendo');loadNextendo();}
+ if(!waiting)nxUrl='';
+ nxWaiting=waiting;
+ const on=!!session&&(waiting||nxDone);
+ $('tab-nextendo').hidden=!on;if(!on&&!$('view-nextendo').hidden)choose(tabs,'tab-games');
+ $('nx-steps').hidden=nxDone;
+ $('nx-open').hidden=!nxUrl;if(nxUrl)$('nx-open').href=nxUrl;
+ $('nx-url').disabled=!waiting;$('nx-send').disabled=nxSending||!waiting;
+ $('nx-step-1').className=nxOpened?'done':'now';$('nx-step-2').className=$('nx-step-3').className=nxOpened?'now':'';
+}
+$('nx-open').addEventListener('click',()=>{nxOpened=true;renderNextendo();});
+$('nx-send').addEventListener('click',async()=>{
+ const url=$('nx-url').value.trim();
+ if(!url){nxNote(nxWords.empty,true);return;}
+ if(nxSending)return;nxSending=true;renderNextendo();
+ try{
+  await api('/api/v1/nextendo/callback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+  nxDone=true;$('nx-url').value='';nxNote(nxWords.done,false);
+ }catch(error){
+  // A refusal ends the sign-in on the console too: say so and keep the page on it.
+  if(error.message==='denied'||error.message==='refused'){nxDone=true;$('nx-url').value='';}
+  nxNote(nxWords[error.message]||words.interrupted,true);
+ }
+ nxSending=false;renderNextendo();
 });
 $('game-back').addEventListener('click',()=>{gameId='';armed='';render();});
 $('kind-update').addEventListener('click',()=>chooseKind('update'));$('kind-dlc').addEventListener('click',()=>chooseKind('dlc'));

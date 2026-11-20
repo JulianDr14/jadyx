@@ -47,6 +47,17 @@ public:
     virtual int Pending() = 0;
     virtual Result SetRenegotiationMode(u32 mode) = 0;
     virtual Result GetRenegotiationMode(u32* mode) = 0;
+
+    // Nextendo only (Jadyx). The defaults keep backends without support unchanged.
+    /// Protocols to offer, in ALPN wire format (length-prefixed names).
+    virtual void SetAlpnProtocols(std::span<const u8> /*wire*/) {}
+    /// Protocol the server picked, empty when none.
+    virtual std::vector<u8> GetSelectedAlpn() {
+        return {};
+    }
+    /// Checks the server chain against the pinned Nextendo roots.
+    /// 0 = off, 1 = log failures only, 2 = fail the handshake.
+    virtual void SetPinnedRootsMode(u32 /*mode*/) {}
 };
 
 Result CreateSSLConnectionBackend(std::unique_ptr<SSLConnectionBackend>* out_backend);

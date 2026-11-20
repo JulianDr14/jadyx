@@ -6,7 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -18,6 +23,8 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/bsd.h"
+#include "core/memory.h"
+#include "core/internal_network/event_fd.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
@@ -26,6 +33,157 @@
 #include <common/settings.h>
 
 namespace Service::Sockets {
+
+// Per-socket datagram counters. Online games end a session when a peer goes quiet; these lines
+// show whether packets stopped arriving, stopped leaving, or failed on the host.
+struct UdpTraffic {
+    using Clock = std::chrono::steady_clock;
+
+    struct Peer {
+        u64 sent = 0;
+        u64 received = 0;
+        Clock::time_point last_received{};
+        bool quiet_reported = false;
+    };
+
+    static constexpr auto QuietAfter = std::chrono::seconds(2);
+    static constexpr auto ReportEvery = std::chrono::seconds(10);
+    static constexpr size_t MaxPeers = 32;
+    static constexpr u64 ErrorsLoggedInFull = 5;
+
+    explicit UdpTraffic(s32 fd_) : fd{fd_}, opened{Clock::now()}, last_report{opened} {}
+
+    void OnSend(const Network::SockAddrIn* to, s32 ret, Errno err) {
+        const auto now = Clock::now();
+        std::scoped_lock lk{mutex};
+        if (ret < 0) {
+            if (err != Errno::AGAIN && ++send_errors <= ErrorsLoggedInFull) {
+                LOG_WARNING(Service, "UDP fd={} send to {} failed: errno {}", fd, Name(to),
+                            static_cast<u32>(err));
+            }
+        } else {
+            ++sent;
+            sent_bytes += static_cast<u64>(ret);
+            if (Peer* peer = Find(to)) {
+                ++peer->sent;
+            }
+        }
+        // The game keeps sending while it waits, so quiet peers are found here.
+        for (auto& [key, peer] : peers) {
+            if (peer.received == 0 || peer.quiet_reported ||
+                now - peer.last_received < QuietAfter) {
+                continue;
+            }
+            peer.quiet_reported = true;
+            LOG_WARNING(Service, "UDP fd={} peer {} quiet for {:.1f} s, {} packets sent to it",
+                        fd, Name(key), Seconds(now - peer.last_received), peer.sent);
+        }
+        Report(now);
+    }
+
+    void OnReceive(const Network::SockAddrIn* from, s32 ret, Errno err) {
+        const auto now = Clock::now();
+        std::scoped_lock lk{mutex};
+        if (ret < 0) {
+            // EAGAIN is a non-blocking poll with nothing queued.
+            if (err != Errno::AGAIN && ++receive_errors <= ErrorsLoggedInFull) {
+                LOG_WARNING(Service, "UDP fd={} receive failed: errno {}", fd,
+                            static_cast<u32>(err));
+            }
+            return;
+        }
+        ++received;
+        received_bytes += static_cast<u64>(ret);
+        if (Peer* peer = Find(from)) {
+            if (peer->quiet_reported) {
+                LOG_INFO(Service, "UDP fd={} peer {} back after {:.1f} s", fd, Name(from),
+                         Seconds(now - peer->last_received));
+                peer->quiet_reported = false;
+            }
+            ++peer->received;
+            peer->last_received = now;
+        }
+        Report(now);
+    }
+
+    void OnClose() {
+        std::scoped_lock lk{mutex};
+        LOG_INFO(Service,
+                 "UDP fd={} closed after {:.1f} s: sent {} packets ({} B), received {} ({} B), "
+                 "errors send {} receive {}",
+                 fd, Seconds(Clock::now() - opened), sent, sent_bytes, received, received_bytes,
+                 send_errors, receive_errors);
+        for (const auto& [key, peer] : peers) {
+            LOG_INFO(Service, "UDP fd={}   peer {}: sent {}, received {}", fd, Name(key),
+                     peer.sent, peer.received);
+        }
+    }
+
+private:
+    static u64 Key(const Network::SockAddrIn* addr) {
+        if (addr == nullptr) {
+            return 0; // connected socket: one implicit peer
+        }
+        u64 ip = 0;
+        for (const u8 b : addr->ip) {
+            ip = (ip << 8) | b;
+        }
+        return (ip << 16) | addr->portno;
+    }
+
+    static std::string Name(u64 key) {
+        if (key == 0) {
+            return "(connected)";
+        }
+        return fmt::format("{}.{}.{}.{}:{}", (key >> 40) & 0xff, (key >> 32) & 0xff,
+                           (key >> 24) & 0xff, (key >> 16) & 0xff, key & 0xffff);
+    }
+
+    static std::string Name(const Network::SockAddrIn* addr) {
+        return Name(Key(addr));
+    }
+
+    static double Seconds(Clock::duration d) {
+        return std::chrono::duration<double>(d).count();
+    }
+
+    Peer* Find(const Network::SockAddrIn* addr) {
+        const u64 key = Key(addr);
+        if (const auto it = peers.find(key); it != peers.end()) {
+            return &it->second;
+        }
+        if (peers.size() >= MaxPeers) {
+            return nullptr;
+        }
+        return &peers[key];
+    }
+
+    void Report(Clock::time_point now) {
+        if (now - last_report < ReportEvery) {
+            return;
+        }
+        LOG_INFO(Service, "UDP fd={} last {:.0f} s: sent {} packets, received {}, {} peers", fd,
+                 Seconds(now - last_report), sent - sent_at_report, received - received_at_report,
+                 peers.size());
+        last_report = now;
+        sent_at_report = sent;
+        received_at_report = received;
+    }
+
+    s32 fd;
+    std::mutex mutex;
+    std::map<u64, Peer> peers;
+    Clock::time_point opened;
+    Clock::time_point last_report;
+    u64 sent = 0;
+    u64 sent_bytes = 0;
+    u64 received = 0;
+    u64 received_bytes = 0;
+    u64 sent_at_report = 0;
+    u64 received_at_report = 0;
+    u64 send_errors = 0;
+    u64 receive_errors = 0;
+};
 
 namespace {
 
@@ -46,6 +204,9 @@ bool IsConnectionBased(Type type) {
 // Reporting 0x100 lets a game that trusts the length copy 240 bytes past its 16-byte sockaddr.
 constexpr size_t GuestSockAddrInSize = 16;
 
+// IPPROTO_TCP option number of TCP_NODELAY.
+constexpr u32 TcpNoDelay = 1;
+
 template <typename T>
 T GetValue(std::span<const u8> buffer) {
     T t{};
@@ -56,6 +217,81 @@ T GetValue(std::span<const u8> buffer) {
 template <typename T>
 void PutValue(std::span<u8> buffer, const T& t) {
     std::memcpy(buffer.data(), &t, (std::min)(sizeof(T), buffer.size()));
+}
+
+// One message of the buffer SendMMsg/RecvMMsg exchange (7.0.0+). After a leading 0x08 byte each
+// message is: u32 namelen, name, s32 iovlen, iovlen x (u64 len, data), u32 controllen, control,
+// s32 flags, s32 msg_len. The offsets point into that buffer.
+struct MMsgIov {
+    size_t data_offset;
+    size_t length;
+};
+
+struct MMsgEntry {
+    size_t namelen_offset;
+    size_t name_offset;
+    size_t namelen;
+    std::vector<MMsgIov> iovs;
+    size_t msg_len_offset;
+};
+
+std::optional<std::vector<MMsgEntry>> ParseMMsgBuffer(std::span<const u8> buffer, u32 vlen) {
+    std::vector<MMsgEntry> entries;
+    size_t pos = 1;
+    const auto take = [&](size_t size) -> std::optional<size_t> {
+        if (size > buffer.size() || pos > buffer.size() - size) {
+            return std::nullopt;
+        }
+        const size_t at = pos;
+        pos += size;
+        return at;
+    };
+    for (u32 i = 0; i < vlen; ++i) {
+        MMsgEntry entry{};
+        const auto namelen_at = take(sizeof(u32));
+        if (!namelen_at) {
+            return std::nullopt;
+        }
+        entry.namelen_offset = *namelen_at;
+        entry.namelen = GetValue<u32>(buffer.subspan(*namelen_at));
+        const auto name_at = take(entry.namelen);
+        const auto iovlen_at = name_at ? take(sizeof(s32)) : std::nullopt;
+        if (!iovlen_at) {
+            return std::nullopt;
+        }
+        entry.name_offset = *name_at;
+        const s32 iovlen = GetValue<s32>(buffer.subspan(*iovlen_at));
+        if (iovlen < 0 || iovlen > 1024) {
+            return std::nullopt;
+        }
+        for (s32 v = 0; v < iovlen; ++v) {
+            const auto len_at = take(sizeof(u64));
+            if (!len_at) {
+                return std::nullopt;
+            }
+            const u64 length = GetValue<u64>(buffer.subspan(*len_at));
+            const auto data_at = length <= buffer.size() ? take(static_cast<size_t>(length))
+                                                         : std::nullopt;
+            if (!data_at) {
+                return std::nullopt;
+            }
+            entry.iovs.push_back({*data_at, static_cast<size_t>(length)});
+        }
+        const auto controllen_at = take(sizeof(u32));
+        if (!controllen_at) {
+            return std::nullopt;
+        }
+        const u32 controllen = GetValue<u32>(buffer.subspan(*controllen_at));
+        const auto control_at = take(controllen);
+        const auto flags_at = control_at ? take(sizeof(s32)) : std::nullopt;
+        const auto msg_len_at = flags_at ? take(sizeof(s32)) : std::nullopt;
+        if (!msg_len_at) {
+            return std::nullopt;
+        }
+        entry.msg_len_offset = *msg_len_at;
+        entries.push_back(std::move(entry));
+    }
+    return entries;
 }
 
 } // Anonymous namespace
@@ -456,16 +692,158 @@ void BSD_USA::Write(HLERequestContext& ctx) {
                      });
 }
 
+void BSD_USA::SendMMsg(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+
+    const auto respond = [&ctx](s32 ret, Errno bsd_errno) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(bsd_errno);
+    };
+
+    if (ctx.BufferDescriptorB().empty() || vlen == 0 || vlen > 0x20) {
+        LOG_WARNING(Service, "SendMMsg fd={} vlen={} has no usable buffer", fd, vlen);
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& descriptor = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buffer(descriptor.Size());
+    ctx.GetMemory().ReadBlock(descriptor.Address(), buffer.data(), buffer.size());
+
+    const auto entries = ParseMMsgBuffer(buffer, vlen);
+    if (!entries) {
+        LOG_WARNING(Service, "SendMMsg fd={} vlen={} buffer of {} bytes does not parse", fd, vlen,
+                    buffer.size());
+        respond(-1, Errno::FAULT);
+        return;
+    }
+
+    s32 sent_messages = 0;
+    Errno first_errno = Errno::SUCCESS;
+    size_t sent_bytes = 0;
+    for (const MMsgEntry& entry : *entries) {
+        std::vector<u8> message;
+        for (const MMsgIov& iov : entry.iovs) {
+            message.insert(message.end(), buffer.begin() + iov.data_offset,
+                           buffer.begin() + iov.data_offset + iov.length);
+        }
+        const std::span<const u8> name{buffer.data() + entry.name_offset, entry.namelen};
+        const auto [ret, bsd_errno] = entry.namelen != 0
+                                          ? SendToImpl(fd, flags, message, name)
+                                          : SendImpl(fd, flags, message);
+        if (ret < 0) {
+            first_errno = bsd_errno;
+            break;
+        }
+        PutValue(std::span<u8>{buffer}.subspan(entry.msg_len_offset), ret);
+        ++sent_messages;
+        sent_bytes += static_cast<size_t>(ret);
+        if (static_cast<size_t>(ret) < message.size()) {
+            break;
+        }
+    }
+
+    LOG_INFO(Service, "SendMMsg fd={} vlen={} sent {} messages, {} bytes, errno={}", fd, vlen,
+             sent_messages, sent_bytes, static_cast<u32>(first_errno));
+
+    if (sent_messages == 0) {
+        respond(-1, first_errno);
+        return;
+    }
+    ctx.WriteBuffer(buffer);
+    respond(sent_messages, Errno::SUCCESS);
+}
+
+void BSD_USA::RecvMMsg(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+    rp.Skip(1, false);
+    const s64 timeout_sec = rp.Pop<s64>();
+
+    const auto respond = [&ctx](s32 ret, Errno bsd_errno) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(bsd_errno);
+    };
+
+    if (ctx.BufferDescriptorB().empty() || vlen == 0 || vlen > 0x20) {
+        LOG_WARNING(Service, "RecvMMsg fd={} vlen={} has no usable buffer", fd, vlen);
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& descriptor = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buffer(descriptor.Size());
+    ctx.GetMemory().ReadBlock(descriptor.Address(), buffer.data(), buffer.size());
+
+    const auto entries = ParseMMsgBuffer(buffer, vlen);
+    if (!entries) {
+        LOG_WARNING(Service, "RecvMMsg fd={} vlen={} buffer of {} bytes does not parse", fd, vlen,
+                    buffer.size());
+        respond(-1, Errno::FAULT);
+        return;
+    }
+
+    // Receive one message, which recvmmsg allows; the guest calls again for more.
+    const MMsgEntry& entry = entries->front();
+    size_t capacity = 0;
+    for (const MMsgIov& iov : entry.iovs) {
+        capacity += iov.length;
+    }
+    std::vector<u8> message(capacity);
+    s32 ret;
+    Errno bsd_errno;
+    if (entry.namelen != 0) {
+        std::vector<u8> addr(entry.namelen);
+        std::tie(ret, bsd_errno) = RecvFromImpl(fd, flags, message, addr);
+        if (ret >= 0) {
+            const size_t name_size = (std::min)(addr.size(), entry.namelen);
+            std::fill_n(buffer.begin() + entry.name_offset, entry.namelen, u8{0});
+            std::copy_n(addr.begin(), name_size, buffer.begin() + entry.name_offset);
+            PutValue(std::span<u8>{buffer}.subspan(entry.namelen_offset),
+                     static_cast<u32>(name_size));
+        }
+    } else {
+        std::tie(ret, bsd_errno) = RecvImpl(fd, flags, message);
+    }
+
+    LOG_INFO(Service, "RecvMMsg fd={} vlen={} timeout={}s got {} bytes, errno={}", fd, vlen,
+             timeout_sec, ret, static_cast<u32>(bsd_errno));
+
+    if (ret < 0) {
+        respond(-1, bsd_errno);
+        return;
+    }
+
+    size_t copied = 0;
+    for (const MMsgIov& iov : entry.iovs) {
+        const size_t chunk = (std::min)(iov.length, static_cast<size_t>(ret) - copied);
+        std::copy_n(message.begin() + copied, chunk, buffer.begin() + iov.data_offset);
+        copied += chunk;
+    }
+    PutValue(std::span<u8>{buffer}.subspan(entry.msg_len_offset), ret);
+    ctx.WriteBuffer(buffer);
+    respond(1, Errno::SUCCESS);
+}
+
 void BSD_USA::Read(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const s32 fd = rp.Pop<s32>();
 
-    LOG_WARNING(Service, "(STUBBED) called. fd={} len={}", fd, ctx.GetWriteBufferSize());
+    LOG_DEBUG(Service, "called. fd={} len={}", fd, ctx.GetWriteBufferSize());
 
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<u32>(0); // ret
-    rb.Push<u32>(0); // bsd errno
+    // read() on a socket is recv() without flags (an eventfd takes its counter this way).
+    ExecuteWork(ctx, RecvWork{
+                         .fd = fd,
+                         .flags = 0,
+                         .message = std::vector<u8>(ctx.GetWriteBufferSize()),
+                     });
 }
 
 void BSD_USA::Close(HLERequestContext& ctx) {
@@ -520,13 +898,51 @@ void BSD_USA::DuplicateSocket(HLERequestContext& ctx) {
 }
 
 void BSD_USA::EventFd(HLERequestContext& ctx) {
+    // The guest sends the flags in the first word and the initial value after them: the online
+    // library's eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC) arrives as {6, 0}. Read the other way
+    // round it became a blocking eventfd that already held 6.
     IPC::RequestParser rp{ctx};
-    const u64 initval = rp.Pop<u64>();
-    const u32 flags = rp.Pop<u32>();
+    const u64 word0 = rp.Pop<u64>();
+    const u32 word1 = rp.Pop<u32>();
+    const u32 flags = static_cast<u32>(word0);
+    const u64 initval = word1;
 
-    LOG_WARNING(Service, "(STUBBED) called. initval={}, flags={}", initval, flags);
+    // Horizon's eventfd flags follow FreeBSD: EFD_SEMAPHORE 1, EFD_NONBLOCK is O_NONBLOCK.
+    constexpr u32 Semaphore = 0x1;
+    constexpr u32 NonBlock = 0x4;
+    const bool non_blocking = (flags & (NonBlock | Network::FLAG_O_NONBLOCK)) != 0;
 
-    BuildErrnoResponse(ctx, Errno::SUCCESS);
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+
+    const s32 fd = FindFreeFileDescriptorHandle();
+    if (fd < 0) {
+        LOG_ERROR(Service, "No more file descriptors available for an eventfd");
+        rb.Push<s32>(-1);
+        rb.PushEnum(Errno::MFILE);
+        return;
+    }
+    auto socket = std::make_shared<Network::EventFdSocket>();
+    Network::Errno host_err = socket->Open(initval, (flags & Semaphore) != 0);
+    if (host_err == Network::Errno::SUCCESS && non_blocking) host_err = socket->SetNonBlock(true);
+    if (host_err != Network::Errno::SUCCESS) {
+        LOG_ERROR(Service, "eventfd could not open its loopback socket");
+        rb.Push<s32>(-1);
+        rb.PushEnum(Translate(host_err));
+        return;
+    }
+    LOG_INFO(Service, "New eventfd fd={} initval={} flags={:#x} (raw {:#x} {:#x})", fd, initval,
+             flags, word0, word1);
+    {
+        std::scoped_lock lk{file_descriptors_mutex};
+        file_descriptors[fd] = FileDescriptor{
+            .socket = std::move(socket),
+            .flags = non_blocking ? static_cast<s32>(Network::FLAG_O_NONBLOCK) : 0,
+            .is_connection_based = false,
+        };
+    }
+    rb.Push<s32>(fd);
+    rb.PushEnum(Errno::SUCCESS);
 }
 
 template <typename Work>
@@ -543,6 +959,16 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
         } else {
             return {-1, Errno::INVAL};
         }
+    }
+
+    // Only IPv4 sockets exist on the host side. Refuse other families up front: a socket that
+    // looks created but has no host socket behind it makes dual-stack clients (gRPC probes
+    // AF_INET6 first) take the IPv6 path and fail every later call. With EAFNOSUPPORT they fall
+    // back to AF_INET.
+    if (domain != Domain::INET && domain != Domain::Unspecified) {
+        LOG_INFO(Service, "socket family {} is not supported, answering EAFNOSUPPORT",
+                 static_cast<u32>(domain));
+        return {-1, Errno::AFNOSUPPORT};
     }
 
     [[maybe_unused]] const bool unk_flag = (static_cast<u32>(type) & 0x20000000) != 0;
@@ -572,6 +998,9 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     descriptor.socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
     descriptor.is_connection_based = IsConnectionBased(type);
     const bool is_connection_based = descriptor.is_connection_based;
+    if (type == Type::DGRAM) {
+        descriptor.udp = std::make_shared<UdpTraffic>(fd);
+    }
     {
         std::scoped_lock lk{file_descriptors_mutex};
         file_descriptors[fd] = std::move(descriptor);
@@ -818,6 +1247,15 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         return Errno::BADF;
     }
 
+    // gRPC sets TCP_NODELAY and reads it back; a zero answer makes it drop the socket before
+    // connecting.
+    if (level == static_cast<u32>(SocketLevel::TCP) && static_cast<u32>(optname) == TcpNoDelay) {
+        const u32 value = file_descriptors[fd]->tcp_nodelay ? 1 : 0;
+        optval.resize(sizeof(u32));
+        PutValue(optval, value);
+        return Errno::SUCCESS;
+    }
+
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
         UNIMPLEMENTED_MSG("Unknown getsockopt level");
         return Errno::SUCCESS;
@@ -838,9 +1276,19 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         }
         return Translate(getsockopt_err);
     }
-    default:
+    default: {
+        // Clients that verify an option after setting it close the socket on a zero answer, so
+        // echo what the guest set.
+        const auto& options = file_descriptors[fd]->socket_options;
+        const auto it = options.find(static_cast<u32>(optname));
+        if (it != options.end()) {
+            optval.resize(sizeof(u32));
+            PutValue(optval, it->second);
+            return Errno::SUCCESS;
+        }
         UNIMPLEMENTED_MSG("Unimplemented optname={}", optname);
         return Errno::SUCCESS;
+    }
     }
 }
 
@@ -851,6 +1299,12 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     if (!file_descriptors[fd]->socket) {
         LOG_WARNING(Service, "Uninitialized socket");
         return Errno::BADF;
+    }
+
+    if (level == static_cast<u32>(SocketLevel::TCP) && static_cast<u32>(optname) == TcpNoDelay &&
+        optval.size() >= sizeof(u32)) {
+        file_descriptors[fd]->tcp_nodelay = GetValue<u32>(optval) != 0;
+        return Errno::SUCCESS;
     }
 
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
@@ -868,8 +1322,13 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         return Translate(socket->SetLinger(linger.onoff != 0, linger.linger));
     }
 
-    ASSERT(optval.size() == sizeof(u32));
+    if (optval.size() != sizeof(u32)) {
+        LOG_WARNING(Service, "(STUBBED) setsockopt optname={:#x} with a {}-byte value",
+                    static_cast<u32>(optname), optval.size());
+        return Errno::SUCCESS;
+    }
     auto value = GetValue<u32>(optval);
+    file_descriptors[fd]->socket_options[static_cast<u32>(optname)] = value;
 
     switch (optname) {
     case OptName::REUSEADDR:
@@ -934,6 +1393,9 @@ std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& mess
         descriptor.socket->SetNonBlock(false);
     }
 
+    if (descriptor.udp) {
+        descriptor.udp->OnReceive(nullptr, ret, bsd_errno);
+    }
     return {ret, bsd_errno};
 }
 
@@ -971,6 +1433,10 @@ std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& 
         descriptor.socket->SetNonBlock(false);
     }
 
+    if (descriptor.udp) {
+        descriptor.udp->OnReceive(p_addr_in, ret, bsd_errno);
+    }
+
     if (p_addr_in) {
         if (ret < 0) {
             addr.clear();
@@ -993,7 +1459,11 @@ std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> m
         LOG_WARNING(Service, "Uninitialized socket");
         return {-1, Errno::BADF};
     }
-    return Translate(file_descriptors[fd]->socket->Send(message, flags));
+    const auto [ret, bsd_errno] = Translate(file_descriptors[fd]->socket->Send(message, flags));
+    if (const auto& udp = file_descriptors[fd]->udp) {
+        udp->OnSend(nullptr, ret, bsd_errno);
+    }
+    return {ret, bsd_errno};
 }
 
 std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
@@ -1015,7 +1485,12 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         p_addr_in = &addr_in;
     }
 
-    return Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    const auto [ret, bsd_errno] =
+        Translate(file_descriptors[fd]->socket->SendTo(flags, message, p_addr_in));
+    if (const auto& udp = file_descriptors[fd]->udp) {
+        udp->OnSend(p_addr_in, ret, bsd_errno);
+    }
+    return {ret, bsd_errno};
 }
 
 Errno BSD_USA::CloseImpl(s32 fd) {
@@ -1033,6 +1508,9 @@ Errno BSD_USA::CloseImpl(s32 fd) {
     }
 
     LOG_INFO(Service, "Close socket fd={}", fd);
+    if (file_descriptors[fd]->udp) {
+        file_descriptors[fd]->udp->OnClose();
+    }
 
     std::scoped_lock lk{file_descriptors_mutex};
     file_descriptors[fd].reset();
@@ -1055,6 +1533,7 @@ std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
         .socket = file_descriptors[fd]->socket,
         .flags = file_descriptors[fd]->flags,
         .is_connection_based = file_descriptors[fd]->is_connection_based,
+        .udp = file_descriptors[fd]->udp,
     };
     return new_fd;
 }
@@ -1150,8 +1629,8 @@ BSD_USA::BSD_USA(Core::System& system_, const char* name, bool is_user_)
         {26, &BSD_USA::Close, "Close"},
         {27, &BSD_USA::DuplicateSocket, "DuplicateSocket"},
         {28, nullptr, "GetResourceStatistics"},
-        {29, nullptr, "RecvMMsg"}, //3.0.0+
-        {30, nullptr, "SendMMsg"}, //3.0.0+
+        {29, &BSD_USA::RecvMMsg, "RecvMMsg"}, //3.0.0+
+        {30, &BSD_USA::SendMMsg, "SendMMsg"}, //3.0.0+
         {31, &BSD_USA::EventFd, "EventFd"}, //7.0.0+
         {32, nullptr, "RegisterResourceStatisticsName"}, //7.0.0+
         {33, nullptr, "RegisterClientShared"}, //10.0.0+

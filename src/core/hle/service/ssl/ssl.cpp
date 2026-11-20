@@ -19,6 +19,10 @@
 #include "core/hle/service/ssl/ssl_backend.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
+#include "core/online/nextendo/address_book.h"
+#include "core/online/nextendo/config.h"
+#include "core/online/nextendo/host_rules.h"
+#include "core/online/nextendo/trust_store.h"
 
 namespace Service::SSL {
 
@@ -155,8 +159,61 @@ public:
     }
 
 private:
+    // Nextendo on: SNI from the last name resolved to the peer IP, ALPN filtered per host and the
+    // chain checked against the pinned roots. Nextendo off: nothing here runs.
+    void PrepareNextendoHandshake() {
+        namespace Nx = Core::Online::Nextendo;
+        const auto config = Nx::GlobalConfig().Snapshot();
+        if (!config->enabled || nextendo_prepared) {
+            return;
+        }
+        nextendo_prepared = true;
+        if (host_name.empty()) {
+            const auto [peer, err] = socket->GetPeerName();
+            if (err == Network::Errno::SUCCESS) {
+                const auto ip = Network::IPv4AddressToString(peer.ip);
+                if (auto host = Nx::GlobalAddressBook().Lookup(ip)) {
+                    LOG_INFO(Service_SSL, "[Nextendo] SNI {} for {}", *host, ip);
+                    host_name = *host;
+                    backend->SetHostName(host_name.c_str());
+                }
+            }
+        }
+        if (!next_alpn_proto.empty()) {
+            std::vector<std::string> requested;
+            for (std::size_t i = 0; i < next_alpn_proto.size();) {
+                const std::size_t length = next_alpn_proto[i++];
+                if (length == 0 || i + length > next_alpn_proto.size()) {
+                    break;
+                }
+                requested.emplace_back(reinterpret_cast<const char*>(&next_alpn_proto[i]),
+                                       length);
+                i += length;
+            }
+            std::vector<u8> wire;
+            for (const auto& name : Nx::FilterAlpn(host_name, requested)) {
+                wire.push_back(static_cast<u8>(name.size()));
+                wire.insert(wire.end(), name.begin(), name.end());
+            }
+            if (!wire.empty()) {
+                backend->SetAlpnProtocols(wire);
+            }
+        }
+        switch (config->tls_mode) {
+        case Nx::TlsVerifyMode::Off:
+            break;
+        case Nx::TlsVerifyMode::LogOnly:
+            backend->SetPinnedRootsMode(1);
+            break;
+        case Nx::TlsVerifyMode::Enforce:
+            backend->SetPinnedRootsMode(2);
+            break;
+        }
+    }
+
     Result DoHandshakeImpl() {
         ASSERT_OR_EXECUTE(!did_handshake && socket, { return ResultNoSocket; });
+        PrepareNextendoHandshake();
         Result res = backend->DoHandshake();
         did_handshake = res.IsSuccess();
         return res;
@@ -210,7 +267,7 @@ private:
                 return ResultInvalidSocket;
             }
             socket = std::move(*sock);
-            backend->SetSocket(std::move(socket));
+            backend->SetSocket(socket); // keep our copy: the handshake and IO mode need it
             return ResultSuccess;
         }
         LOG_ERROR(Service_SSL, "Failed to duplicate socket with fd {}", in_fd);
@@ -221,6 +278,7 @@ private:
         auto const hostname = Common::StringFromBuffer(buf);
         LOG_DEBUG(Service_SSL, "called. hostname={}", hostname);
         ASSERT(!did_handshake);
+        host_name = hostname;
         return backend->SetHostName(hostname.c_str());
     }
 
@@ -324,7 +382,7 @@ private:
     }
 
     Result Peek(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> out_size) {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
+        R_UNLESS(did_handshake, ResultInternalError);
         size_t tmp{};
         auto const res = backend->Peek(&tmp, data);
         *out_size = u32(tmp);
@@ -332,7 +390,57 @@ private:
     }
 
     Result Poll(u32 in_pollevent, u32 timer, Out<u32> out_pollevent) {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
+        // nn::ssl PollEvent bits.
+        constexpr u32 PollRead = 1u << 0;
+        constexpr u32 PollWrite = 1u << 1;
+        constexpr u32 PollExcept = 1u << 2;
+
+        *out_pollevent = 0;
+        R_UNLESS(socket, ResultNoSocket);
+
+        // Decrypted bytes already buffered by OpenSSL are invisible to the socket.
+        if ((in_pollevent & PollRead) != 0 && backend->Pending() > 0) {
+            *out_pollevent = PollRead;
+            R_SUCCEED();
+        }
+
+        Network::PollEvents events{};
+        if ((in_pollevent & PollRead) != 0) {
+            events |= Network::PollEvents::In;
+        }
+        if ((in_pollevent & PollWrite) != 0) {
+            events |= Network::PollEvents::Out;
+        }
+        if ((in_pollevent & PollExcept) != 0) {
+            events |= Network::PollEvents::Pri;
+        }
+        std::vector<Network::PollFD> fds{{socket.get(), events, Network::PollEvents{}}};
+        const auto [count, err] = Network::Poll(fds, static_cast<s32>(timer));
+        if (err != Network::Errno::SUCCESS) {
+            LOG_ERROR(Service_SSL, "Poll failed with Network::Errno {}", err);
+            return ResultInternalError;
+        }
+        if (count == 0) {
+            return ResultTimeout;
+        }
+
+        const Network::PollEvents revents = fds[0].revents;
+        const bool hung_up =
+            True(revents & (Network::PollEvents::Hup | Network::PollEvents::Err));
+        u32 result = 0;
+        // A hang-up must wake a reader so it sees the close through Read.
+        if ((in_pollevent & PollRead) != 0 &&
+            (True(revents & (Network::PollEvents::In | Network::PollEvents::RdNorm)) || hung_up)) {
+            result |= PollRead;
+        }
+        if ((in_pollevent & PollWrite) != 0 && True(revents & Network::PollEvents::Out)) {
+            result |= PollWrite;
+        }
+        if ((in_pollevent & PollExcept) != 0 &&
+            (True(revents & (Network::PollEvents::Pri | Network::PollEvents::Nval)) || hung_up)) {
+            result |= PollExcept;
+        }
+        *out_pollevent = result;
         R_SUCCEED();
     }
 
@@ -422,15 +530,16 @@ private:
     }
 
     Result SetNextAlpnProto(InBuffer<BufferAttr_HipcMapAlias> data) {
-        auto const to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + to_write);
+        // Kept as given (wire format); only offered to the server while Nextendo is on.
+        next_alpn_proto.assign(data.begin(), data.end());
         LOG_DEBUG(Service_SSL, "SetNextAlpnProto called, size={}", next_alpn_proto.size());
         R_SUCCEED();
     }
 
     Result GetNextAlpnProto(OutBuffer<BufferAttr_HipcMapAlias> data, Out<u32> to_write) {
-        *to_write = u32((std::min)(next_alpn_proto.size(), data.size()));
-        next_alpn_proto.assign(data.begin(), data.begin() + *to_write);
+        const auto selected = backend->GetSelectedAlpn();
+        *to_write = u32((std::min)(selected.size(), data.size()));
+        std::copy_n(selected.begin(), *to_write, data.begin());
         LOG_DEBUG(Service_SSL, "GetNextAlpnProto called, size={}", *to_write);
         R_SUCCEED();
     }
@@ -446,7 +555,9 @@ private:
     std::optional<int> fd_to_close;
     std::shared_ptr<Network::SocketBase> socket;
     std::vector<u8> next_alpn_proto;
+    std::string host_name;
     u32 verify_option = 0;
+    bool nextendo_prepared = false;
 
     bool do_not_close_socket = false;
     bool get_server_cert_chain = false;
@@ -671,10 +782,13 @@ private:
 
 class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem> {
     public:
-        explicit ISslServiceForSystem(Core::System& system_) : ServiceFramework{system_, "ssl:s"} {
+        explicit ISslServiceForSystem(Core::System& system_)
+            : ServiceFramework{system_, "ssl:s"}, cert_store{system} {
+            // Games reach ssl:s too. Context creation and the certificate list must be real: a
+            // stub leaves the game's certificate buffer unwritten and it parses garbage.
             // clang-format off
             static const FunctionInfo functions[] = {
-                {0, D<&ISslServiceForSystem::CreateContext>, "CreateContext"},
+                {0, &ISslServiceForSystem::CreateContext, "CreateContext"},
                 {1, D<&ISslServiceForSystem::GetContextCount>, "GetContextCount"},
                 {2, D<&ISslServiceForSystem::GetCertificates>, "GetCertificates"},
                 {3, D<&ISslServiceForSystem::GetCertificateBufSize>, "GetCertificateBufSize"},
@@ -684,7 +798,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
                 {7, D<&ISslServiceForSystem::SetDebugOption>, "SetDebugOption"},
                 {8, D<&ISslServiceForSystem::GetDebugOption>, "GetDebugOption"},
                 {9, D<&ISslServiceForSystem::ClearTls12FallbackFlag>, "ClearTls12FallbackFlag"},
-                {100, D<&ISslServiceForSystem::CreateContextForSystem>, "CreateContextForSystem"},
+                {100, &ISslServiceForSystem::CreateContext, "CreateContextForSystem"},
                 {101, D<&ISslServiceForSystem::SetThreadCoreMask>, "SetThreadCoreMask"},
                 {102, D<&ISslServiceForSystem::GetThreadCoreMask>, "GetThreadCoreMask"},
                 {103, D<&ISslServiceForSystem::VerifySignature>, "VerifySignature"}
@@ -694,7 +808,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             RegisterHandlers(functions);
         };
 
-        // Pulse: every command is a stub, so the service holds nothing.
+        // Pulse: the certificate store is the system's; contexts restore through "ssl".
         std::string_view PulseKind() const override {
             return "ssl:s";
         }
@@ -705,13 +819,24 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return shared_from_this();
         }
 
-        Result CreateContext() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
+        // CreateContextForSystem takes the same leading SslVersion word as CreateContext.
+        void CreateContext(HLERequestContext& ctx) {
+            struct Parameters {
+                SslVersion ssl_version;
+                INSERT_PADDING_BYTES(0x4);
+                u64 pid_placeholder;
+            };
+            static_assert(sizeof(Parameters) == 0x10, "Parameters is an invalid size");
 
-            // TODO (jarrodnorwell)
+            IPC::RequestParser rp{ctx};
+            const auto parameters = rp.PopRaw<Parameters>();
+            LOG_INFO(Service_SSL, "ssl:s cmd {} creates a context, api_version={}",
+                     ctx.GetCommand(), parameters.ssl_version.api_version);
 
-            return ResultSuccess;
-        };
+            IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+            rb.Push(ResultSuccess);
+            rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version);
+        }
 
         Result GetContextCount() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
@@ -721,21 +846,28 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result GetCertificates() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
+        Result GetCertificates(Out<u32> out_num_entries,
+                               OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
+                               InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            const Result result =
+                cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids);
+            LOG_INFO(Service_SSL,
+                     "ssl:s GetCertificates: {} ids (first {}), buffer {:#x}, {} entries, {:#x}",
+                     certificate_ids.size(),
+                     certificate_ids.empty() ? 0 : static_cast<s32>(certificate_ids[0]),
+                     out_buffer.size(), *out_num_entries, result.raw);
+            R_RETURN(result);
+        }
 
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
-        Result GetCertificateBufSize() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
+        Result GetCertificateBufSize(
+            Out<u32> out_size, InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+            u32 num_entries{};
+            const Result result =
+                cert_store.GetCertificateBufSize(out_size, &num_entries, certificate_ids);
+            LOG_INFO(Service_SSL, "ssl:s GetCertificateBufSize: {} ids, {} entries, {:#x} bytes",
+                     certificate_ids.size(), num_entries, *out_size);
+            R_RETURN(result);
+        }
 
         Result DebugIoctl() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
@@ -785,14 +917,6 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             return ResultSuccess;
         };
 
-        Result CreateContextForSystem() {
-            LOG_DEBUG(Service_SSL, "(STUBBED) called.");
-
-            // TODO (jarrodnorwell)
-
-            return ResultSuccess;
-        };
-
         Result SetThreadCoreMask() {
             LOG_DEBUG(Service_SSL, "(STUBBED) called.");
 
@@ -816,6 +940,9 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
 
             return ResultSuccess;
         };
+
+    private:
+        CertStore cert_store;
     };
 
 void LoopProcess(Core::System& system) {

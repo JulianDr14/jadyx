@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <utility>
@@ -71,6 +72,42 @@ void UiPainter::Round(float x, float y, float w, float h, float radius, unsigned
     const auto rect = D2D1::RectF(x, y, x + w, y + h);
     if (radius <= 0) surface->FillRectangle(rect, brush.Get());
     else surface->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush.Get());
+}
+
+D2D1_RECT_F UiPainter::Qr(const Ui::QrCode& code, float x, float y, float side, bool logo) {
+    const int span = code.size + 8;
+    const float module = std::max(1.0f, std::floor(side / static_cast<float>(span)));
+    const float drawn = module * static_cast<float>(span);
+    x = std::round(x + (side - drawn) / 2);
+    y = std::round(y + (side - drawn) / 2);
+    Round(x - module, y - module, drawn + 2 * module, drawn + 2 * module, module * 1.5f, 0xffffff);
+    // Aliased, so neighbouring modules leave no seams; dark runs along each row in one fill.
+    const auto mode = surface->GetAntialiasMode();
+    surface->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    brush->SetColor(D2D1::ColorF(0x000000, 1));
+    const float ox = x + 4 * module, oy = y + 4 * module;
+    const int hole = logo ? Ui::QrLogoModules(code) : 0;
+    const int lo = (code.size - hole) / 2, hi = lo + hole;
+    const auto dark = [&](int column, int row) {
+        return code.Dark(column, row) && !(column >= lo && column < hi && row >= lo && row < hi);
+    };
+    for (int row = 0; row < code.size; ++row) {
+        for (int column = 0; column < code.size;) {
+            if (!dark(column, row)) {
+                ++column;
+                continue;
+            }
+            int end = column;
+            while (end < code.size && dark(end, row)) ++end;
+            surface->FillRectangle(D2D1::RectF(ox + column * module, oy + row * module, ox + end * module,
+                                               oy + (row + 1) * module),
+                                   brush.Get());
+            column = end;
+        }
+    }
+    surface->SetAntialiasMode(mode);
+    if (hole == 0) return D2D1::RectF();
+    return D2D1::RectF(ox + lo * module, oy + lo * module, ox + hi * module, oy + hi * module);
 }
 
 void UiPainter::Outline(float x, float y, float w, float h, float radius, unsigned color, float alpha,
@@ -570,15 +607,15 @@ void UiPainter::ChatHistory(std::span<const ChatMenuLine> lines, std::size_t scr
     if (scroll > 0) MoreBelow(x + width / 2, bottom + 12);
 }
 
-void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
-                           float y) {
+void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view title_text,
+                           std::wstring_view hint, float x, float y) {
     using I18n::Text;
     const float width = ChatNoticeWidth, height = ChatNoticeHeight(lines.size());
     Round(x, y, width, height, 0, Palette::Surface, 0.94f);
     Outline(x + 0.5f, y + 0.5f, width - 1, height - 1, 0, 0xffffff, 0.12f);
     Round(x, y, 4, height, 0, Palette::Accent);
     Icon(UiIcon::Globe, x + 18, y + 14, Palette::Text, 20);
-    std::wstring title{I18n::Tr(Text::ChatTitle)};
+    std::wstring title{title_text};
     for (auto& c : title) c = static_cast<wchar_t>(std::towupper(c));
     Type(title, TypeRole::Caps, x + 46, y + 17, 200, Palette::Text);
     if (more != 0)
@@ -586,11 +623,16 @@ void UiPainter::ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more
              width - 218, Palette::TextSecondary, 1, TextAlign::Trailing);
     float line_y = y + 46;
     for (const ChatMenuLine& line : lines) {
+        if (line.kind == ChatMenuLine::Kind::Status) {
+            Type(line.text, TypeRole::Body, x + 18, line_y, width - 36, Palette::Text, 1, TextAlign::Leading, 2);
+            line_y += 44;
+            continue;
+        }
         Type(line.who, TypeRole::Label, x + 18, line_y, width - 36, Palette::TextSecondary);
         Type(line.text, TypeRole::Body, x + 18, line_y + 16, width - 36, Palette::Text);
         line_y += 44;
     }
-    Type(hint, TypeRole::Label, x + 18, line_y + 4, width - 36, Palette::TextHint);
+    if (!hint.empty()) Type(hint, TypeRole::Label, x + 18, line_y + 4, width - 36, Palette::TextHint);
 }
 
 } // namespace Jadyx

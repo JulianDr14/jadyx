@@ -138,6 +138,8 @@ struct LobbyRoom {
     std::uint16_t port{};
     std::uint32_t players{}, max_players{};
     bool password{};
+    bool pinged{};               ///< The ping below was measured (room_ping.h).
+    std::optional<int> ping_ms;  ///< Round trip to the host; nullopt when it did not answer.
 };
 
 enum class LobbyState : std::uint8_t { Empty, Loading, Ready, Failed };

@@ -7,6 +7,7 @@
 
 #include "jadyx/network/chat_page.h"
 #include "jadyx/network/online_chat.h"
+#include "jadyx/network/room_ping.h"
 
 using namespace Jadyx::Online;
 using Jadyx::MenuAction;
@@ -20,6 +21,50 @@ void Check(bool ok, std::source_location where = std::source_location::current()
 } // namespace
 
 int main() {
+    // Room pings: one target per address and port, results handed to every room listed there.
+    {
+        std::vector<LobbyRoom> rooms(5);
+        rooms[0].address = "1.2.3.4";
+        rooms[0].port = 24872;
+        rooms[1].address = "5.6.7.8";
+        rooms[1].port = 24872;
+        rooms[2].address = "1.2.3.4";
+        rooms[2].port = 24872;
+        rooms[3].address = "1.2.3.4";
+        rooms[3].port = 24873;
+        rooms[4].address = "9.9.9.9";
+        const auto targets = PingTargets(rooms);
+        Check(targets.size() == 3);
+        Check(targets[0].address == "1.2.3.4" && targets[0].port == 24872);
+        Check(targets[1].address == "5.6.7.8" && targets[2].port == 24873);
+        Check(PingKey("1.2.3.4", 24872) == "1.2.3.4:24872");
+        Check(PingLabel(rooms[0]).empty());
+        ApplyPings(rooms, {{"1.2.3.4:24872", 42}, {"5.6.7.8:24872", std::nullopt}});
+        Check(rooms[0].pinged && rooms[2].pinged && rooms[0].ping_ms == 42 && rooms[2].ping_ms == 42);
+        Check(rooms[1].pinged && !rooms[1].ping_ms);
+        Check(!rooms[3].pinged && !rooms[4].pinged);
+        Check(PingLabel(rooms[0]) == L"42 ms");
+        Check(PingLabel(rooms[1]) == L"— ms");
+        Check(PingLabel(rooms[3]).empty());
+        Check(PingToneFor(0) == PingTone::Good && PingToneFor(PingGoodMs) == PingTone::Good);
+        Check(PingToneFor(PingGoodMs + 1) == PingTone::Fair && PingToneFor(PingFairMs) == PingTone::Fair);
+        Check(PingToneFor(PingFairMs + 1) == PingTone::Poor);
+        Check(PingTargets({}).empty());
+        // Sorting: lowest ping first, then no answer, then not measured; ties keep their order.
+        rooms[3].pinged = true;
+        rooms[3].ping_ms = 15;
+        rooms[0].name = "a";
+        rooms[2].name = "b";
+        const LobbyRoom unmeasured = rooms[4];
+        SortByPing(rooms);
+        Check(rooms[0].ping_ms == 15 && rooms[1].name == "a" && rooms[2].name == "b");
+        Check(rooms[3].pinged && !rooms[3].ping_ms && !rooms[4].pinged);
+        Check(FindRoom(rooms, unmeasured) == 4u);
+        Check(FindRoom(rooms, rooms[2]) == 2u);
+        LobbyRoom gone;
+        gone.address = "8.8.8.8";
+        Check(!FindRoom(rooms, gone));
+    }
     // Cleaning: control characters, ends, empty input.
     Check(CleanChatText("  hola\tque\ntal  ") == "hola que tal");
     Check(CleanChatText("   ").empty());

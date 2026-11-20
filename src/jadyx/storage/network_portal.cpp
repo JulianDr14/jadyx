@@ -297,6 +297,13 @@ PortalError BindFailure(int error) {
 }
 } // namespace
 
+std::string PortalPairingLink(const PortalStatus& status, std::string_view open) {
+    if (!status.running || status.code_expired || status.code.empty() || status.url.empty()) return {};
+    std::string link = status.url + "/#pair=" + status.code;
+    if (!open.empty()) link += "&open=" + std::string{open};
+    return link;
+}
+
 namespace {
 std::vector<unsigned char> AdapterTable() {
     ULONG size = 16 * 1024;
@@ -456,6 +463,7 @@ struct NetworkPortal::Impl {
     std::unique_ptr<SystemUpload> system;
     PortalLibrary library;
     PortalAmiibo amiibo;
+    PortalNextendo nextendo;
     bool storage_failed{};
 
     /// Excludes both resumable uploads, or neither. Caller holds `admission`.
@@ -595,6 +603,7 @@ struct NetworkPortal::Impl {
             Reply(response, 200, {{"running", true}, {"page", PortalWeb::PageVersion()}, {"stage", upload ? "nsp" : "connection-test"},
                 {"uploads", bool(upload)}, {"transfer", upload ? UploadJson(upload->Snapshot()) : Json::object()},
                 {"library", bool(library.games)}, {"amiibo", bool(amiibo.list)},
+                {"nextendo", nextendo.sign_in_url ? !nextendo.sign_in_url().empty() : false},
                 {"content", content ? UploadJson(content->Snapshot()) : Json::object()},
                 {"install", InstallJson()},
                 {"removal", [this] { std::lock_guard lock{mutex}; return RemovalJson(status.removal); }()},
@@ -657,6 +666,7 @@ struct NetworkPortal::Impl {
         UploadRoutes("/api/v1/content/uploads", content.get(), upload.get());
         LibraryRoutes();
         AmiiboRoutes();
+        NextendoRoutes();
         SystemRoutes();
         LogRoutes();
     }
@@ -892,6 +902,27 @@ struct NetworkPortal::Impl {
         });
         server->Delete("/api/v1/amiibo/key", [this](const auto&, auto& response) {
             AmiiboWrite(response, 204, [&] { return amiibo.remove_key(); });
+        });
+    }
+
+    // The sign-in page's address while the console waits, and the address the browser ended on.
+    // Nothing of either is logged: the pasted one carries the authorization code.
+    void NextendoRoutes() {
+        server->Get("/api/v1/nextendo", [this](const auto&, auto& response) {
+            if (!nextendo.sign_in_url) { Reply(response, 503, {{"error", "unavailable"}}); return; }
+            Reply(response, 200, {{"url", nextendo.sign_in_url()}});
+        });
+        server->Post("/api/v1/nextendo/callback", [this](const auto& request, auto& response) {
+            if (!nextendo.finish) { Reply(response, 503, {{"error", "unavailable"}}); return; }
+            const auto body = Json::parse(request.body, nullptr, false);
+            if (!body.is_object() || !body.contains("url") || !body["url"].is_string()) {
+                Reply(response, 400, {{"error", "address"}});
+                return;
+            }
+            std::string error;
+            try { error = nextendo.finish(body["url"].template get<std::string>()); } catch (...) { error = "refused"; }
+            if (error.empty()) { response.status = 204; return; }
+            Reply(response, error == "none" ? 409 : 400, {{"error", error}});
         });
     }
 
@@ -1239,6 +1270,11 @@ void NetworkPortal::SetAmiibo(PortalAmiibo amiibo) {
     std::lock_guard lock{impl->lifecycle};
     if (impl->server) throw std::logic_error{"SetAmiibo must precede Start"};
     impl->amiibo = std::move(amiibo);
+}
+void NetworkPortal::SetNextendo(PortalNextendo nextendo) {
+    std::lock_guard lock{impl->lifecycle};
+    if (impl->server) throw std::logic_error{"SetNextendo must precede Start"};
+    impl->nextendo = std::move(nextendo);
 }
 void NetworkPortal::SetUploadsAvailable(bool enabled) {
     std::lock_guard lock{impl->admission};impl->imports_available=enabled;

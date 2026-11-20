@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -27,6 +28,8 @@ class Socket;
 } // namespace Network
 
 namespace Service::Sockets {
+
+struct UdpTraffic;
 
 class BSD_USA final : public ServiceFramework<BSD_USA> {
 public:
@@ -55,6 +58,12 @@ private:
         std::shared_ptr<Network::SocketBase> socket;
         s32 flags = 0;
         bool is_connection_based = false;
+        // TCP_NODELAY as the guest set it; read back by clients that verify the option.
+        bool tcp_nodelay = false;
+        // SOL_SOCKET u32 options as the guest set them, echoed by getsockopt.
+        std::map<u32, u32> socket_options;
+        // Datagram counters for UDP sockets (null otherwise); shared by duplicated descriptors.
+        std::shared_ptr<UdpTraffic> udp;
     };
 
     struct PollWork {
@@ -155,6 +164,8 @@ private:
     void Send(HLERequestContext& ctx);
     void SendTo(HLERequestContext& ctx);
     void Write(HLERequestContext& ctx);
+    void SendMMsg(HLERequestContext& ctx);
+    void RecvMMsg(HLERequestContext& ctx);
     void Read(HLERequestContext& ctx);
     void Close(HLERequestContext& ctx);
     void DuplicateSocket(HLERequestContext& ctx);

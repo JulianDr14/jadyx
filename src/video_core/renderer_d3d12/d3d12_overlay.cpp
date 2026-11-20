@@ -171,35 +171,49 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
             hitch_line = fmt::format("TIRON {:.0f} MS {}", hitch.last_ms,
                                      HITCH_CAUSES[static_cast<size_t>(hitch.last_cause)]);
         }
-        std::vector<std::string> lines{
-            "FPS --", "FRAME -- MS MAX --", "CPU --", "GPUQ --", hud.memory_line, hitch_line};
-        // The frontend's lines under ours (online play), amber when they say something is wrong.
-        const std::size_t own_lines = lines.size();
-        std::vector<bool> warning(own_lines, false);
-        if (const auto source = VideoCore::overlay_extra_lines.load(std::memory_order_relaxed)) {
-            for (auto& line : source()) {
-                lines.push_back(std::move(line.text));
-                warning.push_back(line.warning);
-            }
-        }
+        std::string fps_line = "FPS --", frame_line = "FRAME -- MS MAX --", cpu_line = "CPU --",
+                    gpu_line = "GPUQ --";
         if (!first && hud.frames != 0) {
             const double frames = static_cast<double>(hud.frames);
-            lines[0] = fmt::format("FPS {:.1f}", frames * 1000.0 / elapsed_ms);
-            lines[1] = fmt::format("FRAME {:.1f} MS MAX {:.1f}", hud.last_frame_ms, hud.max_frame_ms);
+            fps_line = fmt::format("FPS {:.1f}", frames * 1000.0 / elapsed_ms);
+            frame_line = fmt::format("FRAME {:.1f} MS MAX {:.1f}", hud.last_frame_ms, hud.max_frame_ms);
             // Process CPU includes all threads; show equivalent cores rather than an ambiguous %.
             if (cpu_valid && hud.cpu_valid && cpu_ticks >= hud.cpu_ticks) {
                 const double cpu_ms = static_cast<double>(cpu_ticks - hud.cpu_ticks) / 10000.0;
-                lines[2] = fmt::format("CPU {:.2f} CORES {:.1f} MS/F", cpu_ms / elapsed_ms,
+                cpu_line = fmt::format("CPU {:.2f} CORES {:.1f} MS/F", cpu_ms / elapsed_ms,
                                        cpu_ms / frames);
             }
             if (scheduler.HasGpuTimestamps()) {
                 const double gpu_ms = static_cast<double>(gpu_us - hud.gpu_us) / 1000.0;
                 // Completed direct-queue time, delayed by frames in flight; not whole-GPU utilization.
-                lines[3] = fmt::format("GPUQ {:.0f}% {:.1f} MS/F", gpu_ms * 100.0 / elapsed_ms,
+                gpu_line = fmt::format("GPUQ {:.0f}% {:.1f} MS/F", gpu_ms * 100.0 / elapsed_ms,
                                        gpu_ms / frames);
             }
         }
-        const LONG cell = std::max<LONG>(2, static_cast<LONG>(swapchain.Height()) / 360);
+        // The lines the player chose (Settings > System > Performance statistics).
+        namespace Item = VideoCore::OverlayItem;
+        const u32 items = VideoCore::performance_overlay_items.load(std::memory_order_relaxed);
+        std::vector<std::string> lines;
+        const std::pair<u32, std::string*> own[]{
+            {Item::Fps, &fps_line}, {Item::FrameTime, &frame_line}, {Item::Cpu, &cpu_line},
+            {Item::Gpu, &gpu_line}, {Item::Memory, &hud.memory_line}, {Item::Hitch, &hitch_line}};
+        for (const auto& [bit, line] : own) {
+            if (items & bit) lines.push_back(*line);
+        }
+        // The frontend's lines under ours (online play), amber when they say something is wrong.
+        const std::size_t own_lines = lines.size();
+        std::vector<bool> warning(own_lines, false);
+        if (const auto source = VideoCore::overlay_extra_lines.load(std::memory_order_relaxed);
+            source && (items & Item::Network)) {
+            for (auto& line : source()) {
+                lines.push_back(std::move(line.text));
+                warning.push_back(line.warning);
+            }
+        }
+        // Normal is one cell per 360 rows (3 px at 1080p); each size step is a third of that.
+        const LONG normal = std::max<LONG>(2, static_cast<LONG>(swapchain.Height()) / 360);
+        const int size = std::clamp(VideoCore::performance_overlay_size.load(std::memory_order_relaxed), -1, 2);
+        const LONG cell = std::max<LONG>(1, normal + size * std::max<LONG>(1, normal / 3));
         const LONG pad = 3 * cell;
         const LONG right = static_cast<LONG>(swapchain.Width()) - 8 * cell;
         const LONG top = 8 * cell;
@@ -207,15 +221,18 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
         for (const auto& line : lines) {
             chars = std::max(chars, line.size());
         }
+        // A gap of one line between ours and the frontend's, when both show.
+        const bool gap = own_lines != 0 && lines.size() > own_lines;
+        const size_t rows = lines.size() + (gap ? 1 : 0);
         const LONG left = right - TextWidth(chars, cell) - 2 * pad;
-        const size_t rows = lines.size() + (lines.size() > own_lines ? 1 : 0);
-        hud.panel = {left, top, right, top + 2 * pad + static_cast<LONG>(rows) * 7 * cell - 2 * cell};
+        hud.panel = lines.empty() ? D3D12_RECT{}
+                                  : D3D12_RECT{left, top, right,
+                                               top + 2 * pad + static_cast<LONG>(rows) * 7 * cell - 2 * cell};
         hud.text.clear();
         hud.text.reserve(1536);
         hud.warning_text.clear();
         for (size_t row = 0; row < lines.size(); ++row) {
-            // A gap of one line between ours and the frontend's.
-            const LONG line_top = top + pad + static_cast<LONG>(row + (row >= own_lines ? 1 : 0)) * 7 * cell;
+            const LONG line_top = top + pad + static_cast<LONG>(row + (gap && row >= own_lines ? 1 : 0)) * 7 * cell;
             AppendText(warning[row] ? hud.warning_text : hud.text, lines[row], left + pad, line_top, cell);
         }
         hud.sample_time = now;
@@ -225,7 +242,8 @@ void RendererD3D12::DrawPerformanceOverlay(CommandStream* cmd,
         hud.frames = 0;
         hud.max_frame_ms = 0;
     }
-    ClearRects(cmd, rtv, OVERLAY_PANEL, {&hud.panel, 1});
+    // Nothing chosen (a Custom profile with every line off, offline): no empty panel.
+    if (hud.panel.right > hud.panel.left) ClearRects(cmd, rtv, OVERLAY_PANEL, {&hud.panel, 1});
     ClearRects(cmd, rtv, OVERLAY_TEXT, hud.text);
     ClearRects(cmd, rtv, OVERLAY_ACCENT, hud.warning_text);
     DrawTraceIndicator(cmd, rtv);
@@ -243,7 +261,9 @@ void RendererD3D12::DrawTraceIndicator(CommandStream* cmd,
     const u64 key = (static_cast<u64>(status.id) << 32) |
                     (static_cast<u64>(status.state) << 24) | tenths;
     const LONG cell = std::max<LONG>(2, static_cast<LONG>(swapchain.Height()) / 360);
-    const LONG top = hud.panel.bottom + 2 * cell;
+    // Under the HUD, or where it would be when no line of it shows.
+    const bool panel = hud.panel.right > hud.panel.left;
+    const LONG top = panel ? hud.panel.bottom + 2 * cell : 8 * cell;
     if (key != hud.trace_key || top != hud.trace_top) {
         std::string label;
         switch (status.state) {
@@ -257,7 +277,7 @@ void RendererD3D12::DrawTraceIndicator(CommandStream* cmd,
         default: return;
         }
         const LONG pad = 3 * cell;
-        const LONG right = hud.panel.right;
+        const LONG right = panel ? hud.panel.right : static_cast<LONG>(swapchain.Width()) - 8 * cell;
         const LONG left = right - TextWidth(label.size(), cell) - 2 * pad;
         hud.trace_panel = {left, top, right, top + 2 * pad + 5 * cell};
         hud.trace_text.clear();

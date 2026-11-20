@@ -249,6 +249,7 @@ struct DetailInfo {
     std::uint64_t key;
     std::uint64_t stored;
     std::string message;
+    std::uint64_t reported = 0; ///< Hits already handed to TakeReport.
 };
 
 struct EntryInfo {
@@ -260,6 +261,9 @@ struct EntryInfo {
     std::uint32_t first_frame;
     std::string message;
     std::vector<DetailInfo> details;
+    std::uint64_t reported = 0;          ///< Hits already handed to TakeReport.
+    std::uint64_t reported_overflow = 0; ///< Overflow hits already handed to TakeReport.
+    bool message_current = true; ///< `message` was captured since the previous TakeReport.
 };
 
 class Writer {
@@ -335,6 +339,50 @@ public:
         return crash_path;
     }
 
+    std::vector<ReportEntry> TakeReport(std::size_t max_entries) {
+        std::scoped_lock lock{data_mutex};
+        Drain(); // first occurrences still queued belong to this report
+        std::vector<ReportEntry> report;
+        const auto take = [](std::uint64_t now, std::uint64_t& reported) {
+            const std::uint64_t delta = now > reported ? now - reported : 0;
+            reported = now;
+            return delta;
+        };
+        for (EntryInfo& entry : entries) {
+            Site& site = *entry.site;
+            const std::string location = fmt::format("{}:{}", entry.file, entry.line);
+            const std::uint64_t hits = take(site.hits.load(std::memory_order_relaxed), entry.reported);
+            if (entry.details.empty()) {
+                if (hits != 0) {
+                    // A message kept from an earlier game would name that game's ids and paths.
+                    report.push_back({entry.category, location, 0, false, hits,
+                                      entry.message_current ? entry.message
+                                                            : std::string{"(message not captured)"}});
+                }
+                // Re-arm the site: its next hit (the next game) captures a fresh message.
+                entry.message_current = false;
+                site.seen.store(false, std::memory_order_relaxed);
+                continue;
+            }
+            for (DetailInfo& detail : entry.details) {
+                if (const auto delta = take(DetailHits(site, detail.stored), detail.reported)) {
+                    report.push_back({entry.category, location, detail.key, true, delta, detail.message});
+                }
+            }
+            if (const auto delta =
+                    take(site.overflow_hits.load(std::memory_order_relaxed), entry.reported_overflow)) {
+                report.push_back({entry.category, location, ~0ULL, true, delta,
+                                  "(more detail keys than the tracker keeps)"});
+            }
+        }
+        std::stable_sort(report.begin(), report.end(),
+                         [](const ReportEntry& a, const ReportEntry& b) { return a.hits > b.hits; });
+        if (report.size() > max_entries) {
+            report.resize(max_entries);
+        }
+        return report;
+    }
+
 private:
     static void Rotate(const std::filesystem::path& path) {
         std::error_code ec;
@@ -370,6 +418,7 @@ private:
                 id = title_id;
                 name = title_name;
             }
+            std::scoped_lock data_lock{data_mutex};
             if (new_title) {
                 WriteTitle(id, name);
             }
@@ -443,6 +492,12 @@ private:
             entries.push_back(std::move(info));
         }
         EntryInfo& entry = entries[it->second];
+        if (!inserted && !record.keyed) {
+            entry.message = std::string{message}; // the site was re-armed by TakeReport
+        }
+        if (!record.keyed) {
+            entry.message_current = true;
+        }
         if (record.keyed) {
             const std::uint64_t stored = record.key + 1 != 0 ? record.key + 1 : 1;
             entry.details.push_back({record.key, stored, std::string{message}});
@@ -576,6 +631,7 @@ private:
     std::uint64_t title_id = 0;
     std::string title_name;
     std::uint64_t json_total = ~0ULL;
+    std::mutex data_mutex; ///< Entries and the log file: the writer thread and TakeReport.
     std::vector<EntryInfo> entries;
     std::unordered_map<Site*, std::size_t> index_by_site;
 };
@@ -795,6 +851,14 @@ void SetTitle(std::uint64_t title_id, std::string name) {
     if (writer) {
         writer->SetTitle(title_id, std::move(name));
     }
+}
+
+std::vector<ReportEntry> TakeReport(std::size_t max_entries) {
+    std::scoped_lock lock{install_mutex};
+    if (!writer) {
+        return {};
+    }
+    return writer->TakeReport(max_entries);
 }
 
 void RequestFlush() noexcept {

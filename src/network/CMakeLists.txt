@@ -15,6 +15,8 @@ add_library(network STATIC
     room.h
     room_member.cpp
     room_member.h
+    room_probe.cpp
+    room_probe.h
     verify_user.cpp
     verify_user.h
 )

@@ -6,6 +6,7 @@
 // loop routes input here and acts on the returned effect (save, clear the cache, ...); the canvas
 // draws from the same state and the layout below, which pointer hit tests share.
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include "jadyx/updates/updater.h"
@@ -23,18 +24,23 @@ enum class EditorPurpose : std::uint8_t {
     UserName, OnlineNickname, OnlineAddress, OnlinePort, OnlinePassword, RoomPassword,
     HostName, HostSlots, HostPort, HostPassword, ChatMessage,
     DsuAddress,   ///< Settings > Controller > DSU controllers: a server's IP.
+    NextendoServer, NextendoNat, ///< Online > Nextendo: the game and NAT servers' IPs.
 };
 
 /// Ports, counts and IP addresses take the numeric pad; names and server hosts the full keyboard.
 constexpr bool NumericEditor(EditorPurpose purpose) {
     return purpose == EditorPurpose::OnlinePort || purpose == EditorPurpose::HostSlots ||
-           purpose == EditorPurpose::HostPort || purpose == EditorPurpose::DsuAddress;
+           purpose == EditorPurpose::HostPort || purpose == EditorPurpose::DsuAddress ||
+           purpose == EditorPurpose::NextendoServer || purpose == EditorPurpose::NextendoNat;
 }
 
 struct SystemPage {
     enum Row : std::size_t { UserName, InterfaceLanguage, GameLanguage, Region, ClockFormat, GameDate, DateYear, DateMonth, DateDay, SurroundSound, AdultMods, PerformanceStats, PulseSessions, PlayTime, OfflineMode, MiiEditor, ClearCache, Updates, RowCount };
 
     bool updates_open{};
+    /// Performance statistics' own rows (StatsRows), opened from its row.
+    bool stats_open{};
+    std::size_t stats_selected{};
     std::size_t update_row{}, update_detail{}, update_scroll{};
     Updates::Snapshot update;
     bool updated{}; ///< This launch confirmed a new version: shown until the next input.
@@ -72,9 +78,42 @@ inline std::optional<std::wstring> StepUiLanguage(const std::wstring& current, b
 }
 } // namespace SystemPageDetail
 
+/// Performance statistics' rows: show, profile, online lines, text size and, in Custom, each line.
+inline SystemPageEffect HandleStatsInput(SystemPage& page, SystemInput input) {
+    auto& settings = page.settings;
+    auto& stats = settings.stats;
+    const auto rows = StatsRows(stats);
+    page.stats_selected = std::min(page.stats_selected, rows.size() - 1);
+    switch (input) {
+    case SystemInput::Up:
+        page.stats_selected = (page.stats_selected + rows.size() - 1) % rows.size();
+        return SystemPageEffect::None;
+    case SystemInput::Down:
+        page.stats_selected = (page.stats_selected + 1) % rows.size();
+        return SystemPageEffect::None;
+    case SystemInput::Back:
+        page.stats_open = false;
+        return SystemPageEffect::None;
+    default:
+        break;
+    }
+    const bool back = input == SystemInput::Left;
+    switch (const StatsRow row = rows[page.stats_selected]) {
+    case StatsRow::Show:     settings.show_performance_stats = !settings.show_performance_stats; break;
+    case StatsRow::Profile:  stats.profile = StepStatsEnum(stats.profile, back); break;
+    case StatsRow::Network:  stats.network = !stats.network; break;
+    case StatsRow::TextSize: stats.text_size = StepStatsEnum(stats.text_size, back); break;
+    default:                 stats.custom_items ^= StatsItemBit(RowItem(row)); break;
+    }
+    // Leaving Custom drops its rows; the focus stays on the profile.
+    page.stats_selected = std::min(page.stats_selected, StatsRows(stats).size() - 1);
+    return SystemPageEffect::Changed;
+}
+
 /// Applies one input to the page (not to the name editor, which the library drives directly).
 inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
     using Row = SystemPage::Row;
+    if (page.stats_open) return HandleStatsInput(page, input);
     switch (input) {
     case SystemInput::Up:
         page.selected = (page.selected + Row::RowCount - 1) % Row::RowCount;
@@ -131,8 +170,10 @@ inline SystemPageEffect HandleSystemInput(SystemPage& page, SystemInput input) {
         settings.show_adult_mods = !settings.show_adult_mods;
         return SystemPageEffect::Changed;
     case Row::PerformanceStats:
-        settings.show_performance_stats = !settings.show_performance_stats;
-        return SystemPageEffect::Changed;
+        if (input != SystemInput::Confirm) return SystemPageEffect::None;
+        page.stats_open = true;
+        page.stats_selected = 0;
+        return SystemPageEffect::None;
     case Row::PulseSessions:
         settings.pulse_sessions = !settings.pulse_sessions;
         return SystemPageEffect::Changed;
@@ -170,6 +211,44 @@ inline SystemPageEffect FinishNameEditor(SystemPage& page, bool accept) {
     // The default name is stored as "no name": it then follows any future default.
     page.settings.user_name = name == DefaultUserName ? std::wstring{} : std::move(name);
     return SystemPageEffect::NameDone;
+}
+
+inline I18n::Text StatsProfileText(StatsProfile profile) {
+    using I18n::Text;
+    switch (profile) {
+    case StatsProfile::Standard: return Text::StatsProfileStandard;
+    case StatsProfile::Minimal:  return Text::StatsProfileMinimal;
+    case StatsProfile::Custom:   return Text::StatsProfileCustom;
+    default:                     return Text::StatsProfileFull;
+    }
+}
+inline I18n::Text StatsProfileHint(StatsProfile profile) {
+    using I18n::Text;
+    switch (profile) {
+    case StatsProfile::Standard: return Text::StatsProfileStandardHint;
+    case StatsProfile::Minimal:  return Text::StatsProfileMinimalHint;
+    case StatsProfile::Custom:   return Text::StatsProfileCustomHint;
+    default:                     return Text::StatsProfileFullHint;
+    }
+}
+inline I18n::Text StatsTextSizeText(StatsTextSize size) {
+    using I18n::Text;
+    switch (size) {
+    case StatsTextSize::Small: return Text::StatsSizeSmall;
+    case StatsTextSize::Large: return Text::StatsSizeLarge;
+    case StatsTextSize::Huge:  return Text::StatsSizeHuge;
+    default:                   return Text::StatsSizeNormal;
+    }
+}
+/// Toggle rows: whether each is on.
+inline bool StatsRowOn(const SystemSettings& settings, StatsRow row) {
+    switch (row) {
+    case StatsRow::Show:    return settings.show_performance_stats;
+    case StatsRow::Network: return settings.stats.network;
+    case StatsRow::Profile:
+    case StatsRow::TextSize: return false;
+    default:                return (settings.stats.custom_items & StatsItemBit(RowItem(row))) != 0;
+    }
 }
 
 inline I18n::Text SystemRowTitle(SystemPage::Row row) {
@@ -256,7 +335,7 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
     case SystemPage::SurroundSound:
         return std::wstring{I18n::Tr(settings.surround_sound ? Text::Yes : Text::No)};
     case SystemPage::PerformanceStats:
-        return std::wstring{I18n::Tr(settings.show_performance_stats ? Text::Yes : Text::No)};
+        return std::wstring{I18n::Tr(settings.show_performance_stats ? StatsProfileText(settings.stats.profile) : Text::No)};
     case SystemPage::AdultMods:
         return std::wstring{I18n::Tr(settings.show_adult_mods ? Text::ModsAdultShown : Text::ModsAdultHidden)};
     case SystemPage::PulseSessions:
@@ -267,6 +346,46 @@ inline std::wstring SystemRowValue(const SystemPage& page, SystemPage::Row row) 
         return std::wstring{I18n::Tr(settings.offline_mode ? Text::Yes : Text::No)};
     default:
         return {};
+    }
+}
+
+inline I18n::Text StatsRowTitle(StatsRow row) {
+    using I18n::Text;
+    switch (row) {
+    case StatsRow::Show:      return Text::StatsShow;
+    case StatsRow::Profile:   return Text::StatsProfile;
+    case StatsRow::Network:   return Text::StatsNetwork;
+    case StatsRow::TextSize:  return Text::StatsTextSize;
+    case StatsRow::Fps:       return Text::StatsLineFps;
+    case StatsRow::FrameTime: return Text::StatsLineFrameTime;
+    case StatsRow::Cpu:       return Text::StatsLineCpu;
+    case StatsRow::Gpu:       return Text::StatsLineGpu;
+    case StatsRow::Memory:    return Text::StatsLineMemory;
+    default:                  return Text::StatsLineHitch;
+    }
+}
+
+/// The hint under a row; the profile's says which lines it shows.
+inline std::wstring StatsRowHint(const SystemSettings& settings, StatsRow row) {
+    using I18n::Text;
+    switch (row) {
+    case StatsRow::Show:     return std::wstring{I18n::Tr(Text::StatsShowHint)};
+    case StatsRow::Profile:  return std::wstring{I18n::Tr(StatsProfileHint(settings.stats.profile))};
+    case StatsRow::Network:  return std::wstring{I18n::Tr(Text::StatsNetworkHint)};
+    case StatsRow::TextSize: return std::wstring{I18n::Tr(Text::StatsTextSizeHint)};
+    default:                 return {};
+    }
+}
+
+inline std::wstring StatsRowValue(const SystemSettings& settings, StatsRow row) {
+    using I18n::Text;
+    const auto yes_no = [](bool on) { return std::wstring{I18n::Tr(on ? Text::Yes : Text::No)}; };
+    switch (row) {
+    case StatsRow::Show:     return yes_no(settings.show_performance_stats);
+    case StatsRow::Profile:  return std::wstring{I18n::Tr(StatsProfileText(settings.stats.profile))};
+    case StatsRow::Network:  return yes_no(settings.stats.network);
+    case StatsRow::TextSize: return std::wstring{I18n::Tr(StatsTextSizeText(settings.stats.text_size))};
+    default:                 return yes_no(StatsRowOn(settings, row));
     }
 }
 

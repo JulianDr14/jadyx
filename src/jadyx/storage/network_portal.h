@@ -10,6 +10,7 @@
 #include <utility>
 #include "jadyx/updates/update_package.h"
 #include <string>
+#include <string_view>
 #include <vector>
 #include "jadyx/storage/nsp_upload.h"
 #include "jadyx/storage/system_upload.h"
@@ -64,6 +65,13 @@ struct PortalStatus {
     PortalRemoval removal;
 };
 
+/// What a phone's camera opens to reach the portal already paired: the console draws it as a QR
+/// code (ui/qr_code.h) beside the typed code. "<url>/#pair=<code>", plus "&open=<tab>" to show a
+/// tab of the page once paired ("games", "amiibo", "nextendo", "system"). The code rides in the
+/// fragment, which browsers never send, and the page takes it out of the address bar at once.
+/// "" when no code can pair right now: the portal is stopped or its code expired.
+std::string PortalPairingLink(const PortalStatus& status, std::string_view open = {});
+
 /// One installed game as the browser sees it. Never carries a console path.
 struct PortalGame {
     std::uint64_t program_id{};
@@ -108,6 +116,15 @@ struct PortalAmiibo {
     std::function<std::string()> remove_key;
 };
 
+/// The Nextendo sign-in, finished from the browser (network/nextendo/service.h): the console has
+/// no browser that can sign in, so the player opens the page there and pastes back the address it
+/// ends on. Callbacks run on a portal worker and must be thread safe. The page's address carries
+/// no secret: the code is only worth something with the verifier, which stays in the console.
+struct PortalNextendo {
+    std::function<std::string()> sign_in_url;                     ///< "" when no sign-in waits
+    std::function<std::string(const std::string& pasted)> finish; ///< error word, "" on success
+};
+
 /// Installs an update/DLC upload; `tag` is the validated "<kind>:<application hex>" and
 /// `developer` asks for its copy on D:.
 using ContentValidator = std::function<std::string(const std::filesystem::path&, const std::string& tag,
@@ -141,6 +158,8 @@ public:
     void SetLibrary(PortalLibrary library);
     // Configure the amiibo files before Start; without them the amiibo routes answer 503.
     void SetAmiibo(PortalAmiibo amiibo);
+    // Configure the Nextendo sign-in before Start; without it its routes answer 503.
+    void SetNextendo(PortalNextendo nextendo);
     bool BlockForLocalOperation();
     std::string FinalizeGame(const GameValidator& validate);
     /// Only the library coordinator calls this, after its metadata worker has joined.

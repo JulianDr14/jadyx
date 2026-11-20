@@ -43,9 +43,23 @@ Errno Translate(Network::Errno value) {
         return Errno::INPROGRESS;
     case Network::Errno::ISCONN:
         return Errno::ISCONN;
+    case Network::Errno::HOSTUNREACH:
+        return Errno::HOSTUNREACH;
+    case Network::Errno::NETDOWN:
+        return Errno::NETDOWN;
+    case Network::Errno::NETUNREACH:
+        return Errno::NETUNREACH;
+    case Network::Errno::MSGSIZE:
+        return Errno::MSGSIZE;
+    case Network::Errno::ADDRINUSE:
+        return Errno::ADDRINUSE;
+    case Network::Errno::ADDRNOTAVAIL:
+        return Errno::ADDRNOTAVAIL;
     default:
+        // A failed call must never reach the guest as SUCCESS: it would carry on with a socket
+        // that is not bound or not connected.
         UNIMPLEMENTED_MSG("Unimplemented errno={}", value);
-        return Errno::SUCCESS;
+        return Errno::INVAL;
     }
 }
 

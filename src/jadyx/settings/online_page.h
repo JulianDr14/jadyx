@@ -22,6 +22,7 @@
 #include "jadyx/network/chat_page.h"
 #include "jadyx/network/online_chat.h"
 #include "jadyx/network/online_rooms.h"
+#include "jadyx/settings/nextendo_page.h"
 
 namespace Jadyx {
 
@@ -31,6 +32,10 @@ struct OnlinePage {
     enum HostRow : std::size_t { HostNickname, HostName, HostSlots, HostPort, HostPassword, HostCreate, HostRows };
 
     bool open{}; ///< The tab shows.
+    /// The tab shows Nextendo instead of Eden rooms (LT/RT, or the switch on the first card). Only
+    /// the view: which network play uses is `nx.preferences.use_nextendo`.
+    bool nextendo{};
+    NextendoPage nx;
     bool host{}; ///< The left card is in Host mode (Y switches it).
     std::size_t host_selected{HostName};
     std::size_t selected{Address};

@@ -20,6 +20,10 @@ constexpr auto GameLanguageKey = L"system_game_language";
 constexpr auto RegionKey = L"system_region";
 constexpr auto UserNameKey = L"system_user_name";
 constexpr auto PerformanceStatsKey = L"system_show_performance_stats";
+constexpr auto StatsProfileKey = L"system_stats_profile";
+constexpr auto StatsItemsKey = L"system_stats_items"; ///< The Custom profile's lines (OverlayItem bits).
+constexpr auto StatsNetworkKey = L"system_stats_network";
+constexpr auto StatsTextSizeKey = L"system_stats_text_size";
 constexpr auto AdultModsKey = L"system_show_adult_mods";
 constexpr auto PulseSessionsKey = L"system_pulse_sessions";
 constexpr auto PlayTimeKey = L"system_track_play_time";
@@ -70,6 +74,14 @@ SystemSettings LoadSystemSettings() {
             settings.user_name = SanitizeUserName(
                 winrt::unbox_value<winrt::hstring>(values.Lookup(UserNameKey)).c_str());
         if (values.HasKey(PerformanceStatsKey)) settings.show_performance_stats = winrt::unbox_value<bool>(values.Lookup(PerformanceStatsKey));
+        if (values.HasKey(StatsProfileKey))
+            settings.stats.profile = static_cast<StatsProfile>(winrt::unbox_value<int32_t>(values.Lookup(StatsProfileKey)));
+        if (values.HasKey(StatsItemsKey))
+            settings.stats.custom_items = static_cast<std::uint32_t>(winrt::unbox_value<int32_t>(values.Lookup(StatsItemsKey)));
+        if (values.HasKey(StatsNetworkKey)) settings.stats.network = winrt::unbox_value<bool>(values.Lookup(StatsNetworkKey));
+        if (values.HasKey(StatsTextSizeKey))
+            settings.stats.text_size = static_cast<StatsTextSize>(winrt::unbox_value<int32_t>(values.Lookup(StatsTextSizeKey)));
+        settings.stats = SanitizeStatsOptions(settings.stats);
         if (values.HasKey(AdultModsKey)) settings.show_adult_mods = winrt::unbox_value<bool>(values.Lookup(AdultModsKey));
         if (values.HasKey(PulseSessionsKey)) settings.pulse_sessions = winrt::unbox_value<bool>(values.Lookup(PulseSessionsKey));
         if (values.HasKey(PlayTimeKey)) settings.track_play_time = winrt::unbox_value<bool>(values.Lookup(PlayTimeKey));
@@ -93,6 +105,10 @@ bool SaveSystemSettings(const SystemSettings& settings) {
         values.Insert(RegionKey, winrt::box_value(ChoiceValue(settings.region)));
         values.Insert(UserNameKey, winrt::box_value(winrt::hstring{SanitizeUserName(settings.user_name)}));
         values.Insert(PerformanceStatsKey, winrt::box_value(settings.show_performance_stats));
+        values.Insert(StatsProfileKey, winrt::box_value(static_cast<int32_t>(settings.stats.profile)));
+        values.Insert(StatsItemsKey, winrt::box_value(static_cast<int32_t>(settings.stats.custom_items)));
+        values.Insert(StatsNetworkKey, winrt::box_value(settings.stats.network));
+        values.Insert(StatsTextSizeKey, winrt::box_value(static_cast<int32_t>(settings.stats.text_size)));
         values.Insert(AdultModsKey, winrt::box_value(settings.show_adult_mods));
         values.Insert(PulseSessionsKey, winrt::box_value(settings.pulse_sessions));
         values.Insert(PlayTimeKey, winrt::box_value(settings.track_play_time));
@@ -289,7 +305,7 @@ bool SaveGameOfflineMode(std::uint64_t program_id, std::optional<bool> offline) 
 ResolvedSystem ApplySystemSettings() {
     const auto locale = DetectSystemLocale();
     const auto settings = LoadSystemSettings();
-    VideoCore::performance_overlay_enabled.store(settings.show_performance_stats, std::memory_order_relaxed);
+    PublishStatsOverlay(settings.show_performance_stats, settings.stats);
     ApplyUpscaling(LoadGraphicsSettings().upscaling);
     const auto resolved = ResolveSystem(settings, locale);
     I18n::SetUiLanguage(*resolved.ui_language);

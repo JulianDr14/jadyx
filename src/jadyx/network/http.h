@@ -16,6 +16,8 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Jadyx::Http {
 
@@ -62,5 +64,27 @@ DownloadError DownloadVerified(const std::string& url, const std::filesystem::pa
                                const std::string& sha256, std::uint64_t bytes, std::stop_token stop,
                                const DownloadProgress& progress,
                                const std::function<void()>& verifying);
+
+/// One call to a JSON API (Nextendo). HTTPS only, no redirects followed, no cookies or cache, and
+/// the body is capped at max_bytes. The bearer token goes in the Authorization header and never
+/// reaches the log.
+struct ApiRequest {
+    std::string method = "GET"; // GET or POST
+    std::string url;
+    std::string bearer;       // empty: no Authorization header
+    std::string content_type; // with a body: "application/json" or form encoding
+    std::string body;
+    std::vector<std::pair<std::string, std::string>> headers; // extra, e.g. a client id
+    std::string accept = "application/json"; // the Accept header; a picture asks for image/*
+    std::size_t max_bytes = 1u << 20;
+};
+
+struct ApiResponse {
+    unsigned status{}; // 0: no connection, timeout, refused URL or a body over the cap
+    std::string body;
+    std::string retry_after; // the Retry-After header as sent, for 429 and 503
+};
+
+ApiResponse Send(const ApiRequest& request, std::stop_token stop);
 
 } // namespace Jadyx::Http

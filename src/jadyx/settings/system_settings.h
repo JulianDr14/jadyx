@@ -19,6 +19,7 @@
 
 #include "common/settings_enums.h"
 #include "jadyx/i18n/localization.h"
+#include "jadyx/settings/performance_stats.h"
 
 namespace Jadyx {
 
@@ -110,6 +111,7 @@ struct SystemSettings {
     std::optional<Settings::Region> region;           ///< nullopt follows the system.
     std::wstring user_name;                           ///< Empty keeps the default name.
     bool show_performance_stats{}; ///< Persistent global HUD preference, off on first install.
+    StatsOptions stats; ///< What the HUD shows: profile, online lines and text size.
     bool show_adult_mods{};                           ///< The mods store lists mods rated for adults.
     bool pulse_sessions{true}; ///< Back to home keeps the game where it is (pulse_sessions.h).
     bool track_play_time{true}; ///< Counts play time per game and orders the library by it (play_history.h).

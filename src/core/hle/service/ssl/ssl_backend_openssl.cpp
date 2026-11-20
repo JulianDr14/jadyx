@@ -16,6 +16,7 @@
 #include "common/string_util.h"
 
 #include "core/hle/service/ssl/ssl_backend.h"
+#include "core/online/nextendo/trust_store.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
 
@@ -196,9 +197,46 @@ public:
         }
     }
 
+    void SetAlpnProtocols(std::span<const u8> wire) override {
+        if (SSL_set_alpn_protos(ssl, wire.data(), static_cast<unsigned>(wire.size())) != 0) {
+            LOG_ERROR(Service_SSL, "SSL_set_alpn_protos failed");
+        }
+    }
+
+    std::vector<u8> GetSelectedAlpn() override {
+        const unsigned char* data = nullptr;
+        unsigned length = 0;
+        SSL_get0_alpn_selected(ssl, &data, &length);
+        return data == nullptr ? std::vector<u8>{} : std::vector<u8>(data, data + length);
+    }
+
+    void SetPinnedRootsMode(u32 mode) override {
+        pinned_roots_mode = mode;
+        if (mode == 0) {
+            return;
+        }
+        static X509_STORE* const pinned_store = Core::Online::Nextendo::BuildRootStore();
+        if (pinned_store == nullptr) {
+            LOG_ERROR(Service_SSL, "[Nextendo] pinned root store is empty, verification skipped");
+            pinned_roots_mode = 0;
+            return;
+        }
+        SSL_set1_verify_cert_store(ssl, pinned_store);
+        // VERIFY_NONE still runs the chain check and records the result for log-only mode.
+        SSL_set_verify(ssl, mode == 2 ? SSL_VERIFY_PEER : SSL_VERIFY_NONE, nullptr);
+    }
+
     Result DoHandshake() override {
         SSL_set_verify_result(ssl, X509_V_OK);
         const int ret = SSL_do_handshake(ssl);
+
+        if (pinned_roots_mode != 0 && ret > 0) {
+            const long verify_result = SSL_get_verify_result(ssl);
+            if (verify_result != X509_V_OK) {
+                LOG_WARNING(Service_SSL, "[Nextendo] server chain not trusted: {}",
+                            X509_verify_cert_error_string(verify_result));
+            }
+        }
 
         if (!skip_cert_verification) {
             const long verify_result = SSL_get_verify_result(ssl);
@@ -226,10 +264,10 @@ public:
     }
 
     Result Peek(size_t* out_size, std::span<u8> data) override {
-        auto const n = (std::min)(data.size(), *out_size);
-        const int ret = SSL_peek(ssl, data.data(), int(n));
-        *out_size = n;
-        return HandleReturn("SSL_write_ex", out_size, ret);
+        // Peek up to the guest's buffer size. Asking for 0 bytes made OpenSSL report
+        // SSL_ERROR_SYSCALL as soon as a record arrived, and the guest dropped the connection.
+        const int ret = SSL_peek_ex(ssl, data.data(), data.size(), out_size);
+        return HandleReturn("SSL_peek_ex", out_size, ret);
     }
 
     Result Write(size_t* out_size, std::span<const u8> data) override {
@@ -385,6 +423,7 @@ public:
     BIO* bio = nullptr;
     bool got_read_eof = false;
     bool skip_cert_verification = false;
+    u32 pinned_roots_mode = 0;
 
     std::shared_ptr<Network::SocketBase> socket;
 };

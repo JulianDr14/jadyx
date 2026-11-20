@@ -65,6 +65,9 @@ public:
     /// One tick of the play loop: the game's keyboard, the menu's input and the cheats database.
     /// BackToLibrary: the player left (any session is already saved) and the game must end.
     Outcome Update();
+    /// A notice over the game in the chat's card, for `seconds`: a network's word as a game
+    /// starts. Opening the menu while it shows opens the menu, not the chat.
+    void ShowNotice(std::wstring_view title, std::wstring text, std::chrono::seconds seconds);
 
 private:
     void CaptureFrame();
@@ -173,6 +176,7 @@ private:
     std::optional<GameMenuSurface> notice_surface;
     std::chrono::steady_clock::time_point notice_until{};
     bool notice_shown{};
+    bool notice_is_chat{}; ///< The notice shows chat messages (opening the menu then opens the chat).
 };
 
 } // namespace Jadyx

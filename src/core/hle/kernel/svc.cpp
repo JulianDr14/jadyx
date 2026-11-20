@@ -7,6 +7,7 @@
 // DO NOT MODIFY IT MANUALLY
 
 #include <type_traits>
+#include <atomic>
 #include <chrono>
 
 #include "common/host_stalls.h"
@@ -15,6 +16,7 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/svc.h"
+#include "core/hle/kernel/svc_results.h"
 
 namespace Kernel::Svc {
 
@@ -2529,6 +2531,24 @@ CallKind KindOfCall(u32 imm) {
 }
 } // Anonymous namespace
 
+namespace {
+/// Online code that aborts with 2001-0114 gives no hint of which call failed. Every SVC that
+/// returns InvalidHandle is logged once (up to a cap) with its inputs and the caller's pc/lr.
+std::atomic<u32> invalid_handle_reports{0};
+constexpr u32 MaxInvalidHandleReports = 200;
+
+void ReportInvalidHandle(KernelCore& kernel, u32 imm,
+                         const std::array<uint64_t, 8>& in, u64 pc, u64 lr) {
+    if (invalid_handle_reports.fetch_add(1, std::memory_order_relaxed) >= MaxInvalidHandleReports)
+        return;
+    const KThread& thread = GetCurrentThread(kernel);
+    LOG_WARNING(Kernel_SVC,
+                "svc {:#x} returned InvalidHandle: thread {:#x} pc={:#x} lr={:#x} "
+                "x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x}",
+                imm, thread.GetThreadId(), pc, lr, in[0], in[1], in[2], in[3], in[4]);
+}
+} // Anonymous namespace
+
 void Call(Core::System& system, u32 imm) {
     const CallKind call_kind = KindOfCall(imm);
     const auto call_start = std::chrono::steady_clock::now();
@@ -2545,12 +2565,21 @@ void Call(Core::System& system, u32 imm) {
     LOG_TRACE(Kernel_SVC, "{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x} [6]={:#x}",
         imm, GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2),
         GetArg64(args, 3), GetArg64(args, 4), GetArg64(args, 5), GetArg64(args, 6));
+    const std::array<uint64_t, 8> in_args = args;
     if (process.Is64Bit()) {
         Call64(system, imm, args);
     } else {
         Call32(system, imm, args);
     }
     //kernel.ExitSVCProfile();
+    if (static_cast<u32>(args[0]) == ResultInvalidHandle.raw) {
+        // Only on failure: the thread's registers are back on the core it returns on.
+        ThreadContext ctx{};
+        if (auto* arm = process.GetArmInterface(kernel.CurrentPhysicalCoreIndex())) {
+            arm->GetContext(ctx);
+        }
+        ReportInvalidHandle(kernel, imm, in_args, ctx.pc, ctx.lr);
+    }
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
     GetCurrentThread(kernel).GetStackParameters().is_calling_svc = false;
     if (call_kind != CallKind::Wait) {

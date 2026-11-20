@@ -193,6 +193,14 @@ private:
     void HostOnline(TimePoint now);
     void PollOnline();
     void PollOnlineChat();
+    /// The Online tab's Nextendo view: copies the service's state while the tab shows, tells the
+    /// service when the view shows, and crosses the catalog with this library.
+    void PollNextendo();
+    void HandleNextendoPage(TimePoint now);
+    /// Shows Eden rooms (false) or Nextendo (true) on the Online tab; play's network stays as chosen.
+    void ShowOnlineNetwork(bool nextendo);
+    /// Eden rooms may not be joined or hosted while Nextendo is chosen: says so and refuses.
+    bool RoomsRefused(TimePoint now);
     /// Settings > Controller's DSU pages: keeps the client running while they show and copies
     /// its state for the rows.
     void PollDsu();
@@ -279,6 +287,11 @@ private:
     std::wstring options_notice;
     GraphicsPage graphics_page;
     OnlinePage online_page;
+    bool nextendo_shown{}; ///< Last told to the Nextendo service (ShowingNextendo).
+    bool nextendo_launch{}; ///< A on an installed game of the Nextendo list: it starts this frame.
+    /// The portal was started for a Nextendo sign-in; it closes a little after the sign-in ends.
+    bool nextendo_portal{};
+    std::chrono::steady_clock::time_point nextendo_portal_close{};
     // The selected game's own graphics, for its Graphics pane; loaded for `game_graphics_id`.
     GameGraphics game_graphics;
     GraphicsCursor game_graphics_cursor; ///< Where its Graphics pane's cursor is.

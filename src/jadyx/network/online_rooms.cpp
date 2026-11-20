@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -20,8 +21,11 @@
 
 #include "common/logging.h"
 #include "common/settings.h"
+#include "jadyx/app/boot_diag.h"
 #include "jadyx/network/http.h"
+#include "jadyx/network/room_ping.h"
 #include "network/network.h"
+#include "network/room_probe.h"
 #include "video_core/performance_overlay.h"
 
 namespace Jadyx::Online {
@@ -162,12 +166,15 @@ std::shared_ptr<RoomMember> BoundMember() {
                 break;
             }
             LOG_INFO(Network, "Online: room state {}", Network::GetStateStr(state));
+            // The diag survives several sessions; the log is overwritten on the next boot.
+            WriteDiag(fmt::format("online room: state {}", Network::GetStateStr(state)));
             Touch();
         });
         g_on_error = member->BindOnError([](const RoomMember::Error& error) {
             std::scoped_lock lock{g_mutex};
             g_status.failure = Translate(error);
             LOG_WARNING(Network, "Online: room error {}", Network::GetErrorStr(error));
+            WriteDiag(fmt::format("online room: error {}", Network::GetErrorStr(error)));
             Touch();
         });
         g_on_room = member->BindOnRoomInformationChanged(
@@ -197,6 +204,10 @@ std::shared_ptr<RoomMember> BoundMember() {
                 case Network::IdMemberBanned: kind = ChatKind::Banned; break;
                 default: return;
                 }
+                static constexpr const char* kVerbs[] = {"", "joined", "left", "was kicked",
+                                                         "was banned"};
+                WriteDiag(fmt::format("online room: {} {}", entry.nickname,
+                                      kVerbs[static_cast<u8>(entry.type)]));
                 std::scoped_lock lock{g_mutex};
                 g_chat.AddStatus(kind, entry.nickname);
             });
@@ -373,6 +384,24 @@ void ParseLobby(const std::string& body, LobbySnapshot& out) {
         if (a.players != b.players) return a.players > b.players;
         return a.name < b.name;
     });
+}
+
+/// How long a room gets to answer the handshake, and how many are measured at once.
+constexpr u32 PingTimeoutMs = 1500;
+constexpr std::size_t PingBatch = 32;
+
+/// One ENet handshake with each room, a batch at a time; stops between batches when asked.
+std::map<std::string, std::optional<int>> MeasurePings(const std::vector<PingTarget>& targets, std::stop_token stop) {
+    std::map<std::string, std::optional<int>> results;
+    for (std::size_t first = 0; first < targets.size() && !stop.stop_requested(); first += PingBatch) {
+        const std::size_t end = std::min(targets.size(), first + PingBatch);
+        std::vector<Network::RoomProbeTarget> batch;
+        for (std::size_t i = first; i < end; ++i) batch.push_back({targets[i].address, targets[i].port});
+        const auto measured = Network::ProbeRooms(batch, PingTimeoutMs);
+        for (std::size_t i = first; i < end; ++i)
+            results[PingKey(targets[i].address, targets[i].port)] = measured[i - first];
+    }
+    return results;
 }
 
 } // namespace
@@ -614,6 +643,28 @@ void RefreshLobby() {
             // A failed refresh keeps the rooms already shown.
             if (fresh.state == LobbyState::Failed) fresh.rooms = std::move(g_lobby.rooms);
             g_lobby = std::move(fresh);
+        }
+        // The list shows at once; each room's ping fills in when its host answers or times out.
+        std::vector<PingTarget> targets;
+        std::uint64_t listed{};
+        {
+            std::scoped_lock lock{g_lobby_mutex};
+            if (g_lobby.state == LobbyState::Ready) targets = PingTargets(g_lobby.rooms);
+            listed = g_lobby.version;
+        }
+        // The probes need ENet started, like joining a room.
+        if (!targets.empty()) BoundMember();
+        if (!targets.empty() && g_network_ready) {
+            auto results = MeasurePings(targets, stop);
+            std::size_t answered = 0;
+            for (const auto& [address, ms] : results) answered += ms.has_value();
+            LOG_INFO(Network, "Online: {} of {} rooms answered a ping", answered, results.size());
+            std::scoped_lock lock{g_lobby_mutex};
+            if (!stop.stop_requested() && g_lobby.version == listed) {
+                ApplyPings(g_lobby.rooms, results);
+                SortByPing(g_lobby.rooms);
+                ++g_lobby.version;
+            }
         }
         g_lobby_busy = false;
     });

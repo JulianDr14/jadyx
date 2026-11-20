@@ -19,6 +19,7 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 
+#include "jadyx/ui/qr_code.h"
 #include "jadyx/ui/ui_icon.h"
 
 namespace Jadyx {
@@ -79,6 +80,11 @@ public:
     void SyncLanguage();
 
     void Round(float x, float y, float w, float h, float radius, unsigned color, float alpha = 1);
+    /// A QR code (ui/qr_code.h) on a white square of `side` with its 4-module quiet zone; the
+    /// modules snap to whole pixels so a phone camera reads them from across a room. With
+    /// `logo`, the centre square QrLogoModules allows stays white; returns that square (empty
+    /// when there is none) for the caller to draw its logo in.
+    D2D1_RECT_F Qr(const Ui::QrCode& code, float x, float y, float side, bool logo = false);
     /// A rounded hairline (stroke centred on the rectangle's edge).
     void Outline(float x, float y, float w, float h, float radius, unsigned color, float alpha,
                  float stroke = 1);
@@ -139,8 +145,10 @@ public:
                      float bottom);
     /// The card that tells of new messages: the newest at (x, y), `more` besides them, and a hint
     /// of where to answer. ChatNoticeWidth wide, ChatNoticeHeight(lines) tall.
-    void ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view hint, float x,
-                    float y);
+    /// The notice card over the game: `title` in capitals, then the lines (a Status line is one
+    /// text of up to two lines, without a name), then `hint` (none when empty).
+    void ChatNotice(std::span<const ChatMenuLine> lines, std::size_t more, std::wstring_view title,
+                    std::wstring_view hint, float x, float y);
     static constexpr float ChatNoticeWidth = 380;
     static constexpr float ChatNoticeHeight(std::size_t lines) {
         return 46 + static_cast<float>(lines) * 44 + 26;

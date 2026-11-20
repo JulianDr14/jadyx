@@ -943,7 +943,10 @@ struct GameMenuSurface::Impl : UiPainter {
     static float NoticeHeight(std::size_t lines) { return ChatNoticeHeight(lines); }
 
     void DrawChatNotice(const ChatNoticeView& view) {
-        ChatNotice(view.lines, view.more, I18n::Tr(Text::ChatReplyHint), 0, 0);
+        if (view.title.empty())
+            ChatNotice(view.lines, view.more, I18n::Tr(Text::ChatTitle), I18n::Tr(Text::ChatReplyHint), 0, 0);
+        else
+            ChatNotice(view.lines, view.more, view.title, view.hint, 0, 0);
     }
 
     void DrawKeyboard(const TextEntryPanelView& view, bool can_cancel) {
