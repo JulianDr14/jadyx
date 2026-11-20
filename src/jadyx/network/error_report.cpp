@@ -93,13 +93,104 @@ bool IsDigit(char c) {
     return c >= '0' && c <= '9';
 }
 
-/// Replaces dotted IPv4 addresses (with an optional :port) by "<ip>": peers of an online game
-/// appear in some network warnings.
+bool IsHex(char c) {
+    return IsDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+bool IsWordChar(char c) {
+    return IsHex(c) || (c >= 'g' && c <= 'z') || (c >= 'G' && c <= 'Z') || c == '_';
+}
+
+char Lower(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+bool StartsWithNoCase(std::string_view text, std::size_t at, std::string_view prefix) {
+    if (text.size() - at < prefix.size()) return false;
+    for (std::size_t k = 0; k < prefix.size(); ++k) {
+        if (Lower(text[at + k]) != prefix[k]) return false;
+    }
+    return true;
+}
+
+/// An absolute path at `at` ("C:\..." or "C:/..."): its length, or 0. Ends at whitespace, quotes,
+/// brackets, commas and the ':' that follows a file name.
+std::size_t PathLength(std::string_view text, std::size_t at) {
+    if (text.size() - at < 3 || !IsWordChar(text[at]) || IsDigit(text[at]) || text[at + 1] != ':' ||
+        (text[at + 2] != '\\' && text[at + 2] != '/') || (at > 0 && IsWordChar(text[at - 1]))) {
+        return 0;
+    }
+    std::size_t j = at + 3;
+    while (j < text.size()) {
+        const char c = text[j];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\'' || c == '"' || c == ',' || c == ':' ||
+            c == ')' || c == ']' || c == '>') {
+            break;
+        }
+        ++j;
+    }
+    return j - at;
+}
+
+/// A source path keeps only its part below src/ ("core/hle/service/service.cpp"); any other path
+/// (the build machine's folders, the player's storage) becomes "<path>".
+std::string ScrubPath(std::string_view path) {
+    std::size_t below = std::string_view::npos;
+    for (std::size_t k = 0; k + 5 <= path.size(); ++k) {
+        if ((path[k] == '\\' || path[k] == '/') && StartsWithNoCase(path, k + 1, "src") &&
+            (path[k + 4] == '\\' || path[k + 4] == '/')) {
+            below = k + 5;
+        }
+    }
+    if (below == std::string_view::npos || below >= path.size()) return "<path>";
+    std::string out{path.substr(below)};
+    std::replace(out.begin(), out.end(), '\\', '/');
+    return out;
+}
+
+/// A player identifier at `at`: a dashed UUID (8-4-4-4-12) or a run of 32+ hex digits, with an
+/// optional 0x. Its length, or 0. Account and friend services print the profile's UUID.
+std::size_t IdLength(std::string_view text, std::size_t at) {
+    if (at > 0 && IsWordChar(text[at - 1])) return 0;
+    std::size_t j = at;
+    if (text.size() - j >= 2 && text[j] == '0' && (text[j + 1] == 'x' || text[j + 1] == 'X')) j += 2;
+    const std::size_t digits_at = j;
+    while (j < text.size() && IsHex(text[j])) ++j;
+    if (j - digits_at >= 32 && (j == text.size() || !IsWordChar(text[j]))) return j - at;
+    // Dashed form, no 0x.
+    static constexpr std::size_t Groups[] = {8, 4, 4, 4, 12};
+    j = at;
+    for (std::size_t g = 0; g < std::size(Groups); ++g) {
+        const std::size_t start = j;
+        while (j < text.size() && IsHex(text[j])) ++j;
+        if (j - start != Groups[g]) return 0;
+        if (g + 1 < std::size(Groups)) {
+            if (j >= text.size() || text[j] != '-') return 0;
+            ++j;
+        }
+    }
+    return j == text.size() || !IsWordChar(text[j]) ? j - at : 0;
+}
+
+/// Takes out what could point at a person: dotted IPv4 addresses (with an optional :port) become
+/// "<ip>" (online peers in network warnings), absolute paths lose everything above src/ or become
+/// "<path>" (assert messages print the build machine's full source path), and profile UUIDs become
+/// "<id>" (account and friend services print them).
 std::string Scrub(std::string_view text) {
     std::string out;
     out.reserve(text.size());
     std::size_t i = 0;
     while (i < text.size()) {
+        if (const std::size_t path = PathLength(text, i)) {
+            out += ScrubPath(text.substr(i, path));
+            i += path;
+            continue;
+        }
+        if (const std::size_t id = IdLength(text, i)) {
+            out += "<id>";
+            i += id;
+            continue;
+        }
         if (IsDigit(text[i]) && (i == 0 || !IsDigit(text[i - 1]))) {
             std::size_t j = i;
             int groups = 0;
