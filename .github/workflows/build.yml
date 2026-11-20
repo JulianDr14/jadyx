@@ -165,8 +165,12 @@ jobs:
       # find_program would give. sccache cannot share a /Zi program database between parallel
       # compilers: embed the debug info (/Z7) instead, which UseCcache does only for Debug and
       # RelWithDebInfo. The link still writes jadyx.pdb.
+      # The error report collector's address is read at configure time (src/jadyx/CMakeLists.txt);
+      # without the secret the build ships with reports off.
       - name: Configure
         shell: cmd
+        env:
+          JADYX_REPORT_URL: ${{ secrets.JADYX_REPORT_URL }}
         run: >
           tools\xbox\build-env.bat cmake --preset uwp-x64
           -DUSE_CCACHE=ON -DCCACHE_BINARY=sccache
