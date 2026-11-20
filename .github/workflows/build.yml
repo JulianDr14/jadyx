@@ -103,6 +103,32 @@ jobs:
           # The runner image pins the compiler: objects built by another one are not reused.
           "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
 
+      # Newer runner images ship only the newest MSVC. The pinned one is installed side by side
+      # from the Visual Studio catalog: its x86.x64 component brings the Store CRT a UWP build needs.
+      - name: Pinned MSVC toolset
+        if: env.JADYX_VCVARS_VER != ''
+        shell: powershell
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer"
+          $vswhere = Join-Path $installer "vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $instance = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property instanceId
+          $tools = Join-Path $vs "VC\Tools\MSVC"
+          $ver = $env:JADYX_VCVARS_VER
+          if (Get-ChildItem $tools -Directory -Filter "$ver.*") { "MSVC $ver is already installed"; exit 0 }
+          $catalog = Get-Content "C:\ProgramData\Microsoft\VisualStudio\Packages\_Instances\$instance\catalog.json" -Raw | ConvertFrom-Json
+          $pattern = '^Microsoft\.VisualStudio\.Component\.VC\.' + [regex]::Escape($ver) + '(\.[0-9]+)*\.x86\.x64$'
+          $id = $catalog.packages.id | Where-Object { $_ -match $pattern } | Select-Object -First 1
+          if (-not $id) { throw "The Visual Studio catalog has no x86.x64 component for MSVC $ver" }
+          "Installing $id"
+          $p = Start-Process (Join-Path $installer "setup.exe") -Wait -PassThru -ArgumentList @(
+              "modify", "--installPath", "`"$vs`"", "--add", $id, "--quiet", "--norestart", "--nocache")
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "Visual Studio installer exited with $($p.ExitCode)" }
+          $dir = Get-ChildItem $tools -Directory -Filter "$ver.*" | Select-Object -First 1
+          if (-not $dir) { throw "MSVC $ver is still missing after the install" }
+          if (-not (Test-Path (Join-Path $dir.FullName "lib\x64\store"))) { throw "MSVC $ver has no Store CRT" }
+          "Installed $($dir.Name)"
+
       - name: Restore CPM sources
         id: cpm
         uses: actions/cache/restore@v6
@@ -154,7 +180,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build-uwp/_deps/openssl-build
-          key: openssl-uwp-sccache-${{ steps.tools.outputs.image }}-${{ hashFiles('cpmfile.json', 'CMakePresets.json', 'CMakeLists.txt', 'CMakeModules/**') }}
+          key: openssl-uwp-sccache-${{ steps.tools.outputs.image }}-msvc${{ env.JADYX_VCVARS_VER }}-${{ hashFiles('cpmfile.json', 'CMakePresets.json', 'CMakeLists.txt', 'CMakeModules/**') }}
 
       # Its post step read the stats after "Compiler cache stats" had stopped the server, so its
       # annotation always said 0 hits. That step writes the real ones to the run summary instead.
