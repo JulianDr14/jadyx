@@ -77,6 +77,9 @@ jobs:
       # archive.
       SCCACHE_DIR: ${{ github.workspace }}\.cache\sccache
       SCCACHE_CACHE_SIZE: 4G
+      # MSVC 14.52 crashes with an internal compiler error (C1001) in the LTO code generation of
+      # jadyx.exe. 0.4.3.0 linked fine with 14.51, so build-env.bat pins it until a fixed toolset.
+      JADYX_VCVARS_VER: "14.51"
     steps:
       - uses: actions/checkout@v7
 

@@ -28,8 +28,15 @@ REM prefix byte for byte, and a localized prefix (e.g. Spanish) that drifts from
 REM cached silently stops header edits from triggering rebuilds. Needs the VS English language pack.
 set VSLANG=1033
 
-call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 uwp
-if errorlevel 1 ( echo ERROR: vcvarsall x64 uwp failed. & exit /b 1 )
+REM JADYX_VCVARS_VER (e.g. 14.51) pins an installed MSVC toolset instead of the newest one.
+set "VCVARS_VER_ARG="
+if defined JADYX_VCVARS_VER (
+    set "VCVARS_VER_ARG=-vcvars_ver=%JADYX_VCVARS_VER%"
+    echo MSVC toolset pinned: %JADYX_VCVARS_VER%
+)
+
+call "%VSROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 uwp %VCVARS_VER_ARG%
+if errorlevel 1 ( echo ERROR: vcvarsall x64 uwp %VCVARS_VER_ARG% failed. & exit /b 1 )
 
 REM VS's CMake + Ninja must come first; a stray CMake elsewhere on PATH (Strawberry Perl bundles
 REM one) would otherwise win.
