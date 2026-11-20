@@ -263,6 +263,7 @@ struct EntryInfo {
     std::vector<DetailInfo> details;
     std::uint64_t reported = 0;          ///< Hits already handed to TakeReport.
     std::uint64_t reported_overflow = 0; ///< Overflow hits already handed to TakeReport.
+    bool message_current = true; ///< `message` was captured since the previous TakeReport.
 };
 
 class Writer {
@@ -348,13 +349,19 @@ public:
             return delta;
         };
         for (EntryInfo& entry : entries) {
-            const Site& site = *entry.site;
+            Site& site = *entry.site;
             const std::string location = fmt::format("{}:{}", entry.file, entry.line);
             const std::uint64_t hits = take(site.hits.load(std::memory_order_relaxed), entry.reported);
             if (entry.details.empty()) {
                 if (hits != 0) {
-                    report.push_back({entry.category, location, 0, false, hits, entry.message});
+                    // A message kept from an earlier game would name that game's ids and paths.
+                    report.push_back({entry.category, location, 0, false, hits,
+                                      entry.message_current ? entry.message
+                                                            : std::string{"(message not captured)"}});
                 }
+                // Re-arm the site: its next hit (the next game) captures a fresh message.
+                entry.message_current = false;
+                site.seen.store(false, std::memory_order_relaxed);
                 continue;
             }
             for (DetailInfo& detail : entry.details) {
@@ -485,6 +492,12 @@ private:
             entries.push_back(std::move(info));
         }
         EntryInfo& entry = entries[it->second];
+        if (!inserted && !record.keyed) {
+            entry.message = std::string{message}; // the site was re-armed by TakeReport
+        }
+        if (!record.keyed) {
+            entry.message_current = true;
+        }
         if (record.keyed) {
             const std::uint64_t stored = record.key + 1 != 0 ? record.key + 1 : 1;
             entry.details.push_back({record.key, stored, std::string{message}});

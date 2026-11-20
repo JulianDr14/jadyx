@@ -225,12 +225,13 @@ struct ReportEntry {
     std::uint64_t key;       ///< The detail key of a keyed site; 0 otherwise.
     bool keyed;
     std::uint64_t hits;      ///< Hits since the previous report.
-    std::string message;     ///< The first occurrence's message.
+    std::string message;     ///< The first occurrence's message since the previous report.
 };
 
 /// The bugs hit since the previous call (the game that just ended), most hits first, at most
 /// `max_entries`. Takes the writer's lock for a moment; call it after the game stopped, never from
-/// an emulator thread. Empty while the tracker is off.
+/// an emulator thread. Empty while the tracker is off. Re-arms every site without detail keys, so
+/// the next report carries the message of its first hit in that game, not in an earlier one.
 [[nodiscard]] std::vector<ReportEntry> TakeReport(std::size_t max_entries);
 /// Writes the final summary and stops the writer.
 void Shutdown();
