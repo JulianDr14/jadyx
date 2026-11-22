@@ -59,8 +59,15 @@ Result IStorage::Read(
                      std::chrono::nanoseconds{std::min(length, MaxChargedReadSize) *
                                               1'000'000'000 / ReadBytesPerSecond};
 
+    // Read at most the buffer the guest mapped, as the console's fs server does: a longer length
+    // would write past the end of the host buffer.
+    const size_t read_size = std::min(out_bytes.size(), static_cast<size_t>(length));
+    if (read_size == 0) {
+        R_SUCCEED();
+    }
+
     // Read the data from the Storage backend
-    backend->Read(out_bytes.data(), length, offset);
+    backend->Read(out_bytes.data(), read_size, offset);
 
     R_SUCCEED();
 }
