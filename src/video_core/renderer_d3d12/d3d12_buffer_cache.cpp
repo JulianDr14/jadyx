@@ -237,12 +237,14 @@ Buffer::Buffer(BufferCacheRuntime& runtime, VAddr cpu_addr, u64 size_bytes, bool
     : VideoCommon::BufferBase(cpu_addr, size_bytes), runtime{&runtime},
       scheduler{&runtime.scheduler},
       id{runtime.next_buffer_id++},
-      // Whole 256-byte blocks: a guest cbuf ending with the buffer still fits a CBV.
-      buffer{runtime.CreateDefaultBuffer(
-          Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT))},
+      // Whole 256-byte blocks for CBVs, rounded up to 64 KiB buckets for committed pool reuse.
+      buffer{runtime.CreateDefaultBuffer(Common::AlignUp(
+          Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT), 65536ULL))},
       address{buffer ? buffer->GetGPUVirtualAddress() : 0},
       charge{Common::MemoryAccount::BufferCache,
-             Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)} {}
+             Common::AlignUp(
+                 Common::AlignUp(size_bytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT),
+                 65536ULL)} {}
 
 Buffer::~Buffer() {
     ReleaseBuffer();
@@ -383,10 +385,13 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, Scheduler& schedul
 }
 
 namespace {
-/// Recycled buffers are not charged to any cache, so the pool stays small.
+/// Recycled buffers are not charged to any cache, so the pool stays capped and sheds on pressure.
+constexpr u64 BUFFER_POOL_ALIGNMENT = 65536ULL;
 constexpr u64 MAX_RECYCLED_SIZE = 4ULL * 1024 * 1024;
-constexpr u64 MAX_RECYCLED_BYTES = 24ULL * 1024 * 1024;
-constexpr u64 RECYCLED_FRAMES = 30;
+constexpr u64 MAX_RECYCLED_BYTES = 48ULL * 1024 * 1024;
+constexpr u64 PRESSURE_RECYCLED_BYTES = 16ULL * 1024 * 1024;
+constexpr u64 RECYCLED_FRAMES = 300;
+constexpr u64 PRESSURE_RECYCLED_FRAMES = 30;
 } // namespace
 
 BufferCacheRuntime::~BufferCacheRuntime() {
@@ -407,10 +412,11 @@ void BufferCacheRuntime::RecycleBuffer(ComPtr<ID3D12Resource> resource, u64 size
 }
 
 ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
+    const u64 alloc_size = size > 4 ? Common::AlignUp(size, BUFFER_POOL_ALIGNMENT) : size;
     if (!recycled.empty()) {
         const u64 tick = scheduler.CurrentTick();
         for (RecycledBuffer& entry : recycled) {
-            if (entry.size != size || entry.tick >= tick) {
+            if (entry.size != alloc_size || entry.tick >= tick) {
                 continue;
             }
             ComPtr<ID3D12Resource> reused = std::move(entry.resource);
@@ -422,17 +428,24 @@ ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
         }
         ++recycle_misses;
     }
-    // Storage buffers and image buffers are UAVs.
+    // Storage buffers and image buffers are UAVs; skip OS zero-fill because guests initialize before reading.
+    const D3D12_HEAP_FLAGS heap_flags = NotZeroedFlag(device.Get());
     HRESULT hr = S_OK;
     const auto create = [&] {
-        return CreateCommittedBuffer(device.Get(), size, D3D12_HEAP_TYPE_DEFAULT,
+        return CreateCommittedBuffer(device.Get(), alloc_size, D3D12_HEAP_TYPE_DEFAULT,
                                      D3D12_RESOURCE_STATE_COMMON,
                                      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                     "CreateCommittedResource (buffer cache)", &hr);
+                                     "CreateCommittedResource (buffer cache)", &hr, heap_flags);
     };
     ComPtr<ID3D12Resource> buffer = create();
-    if (!buffer && hr == E_OUTOFMEMORY &&
-        transfer_buffers.ReclaimAfterOutOfMemory(size, "cached buffer")) {
+    if (!buffer && hr == E_OUTOFMEMORY) {
+        for (RecycledBuffer& entry : recycled) {
+            scheduler.DeferRelease(std::move(entry.resource));
+        }
+        recycled.clear();
+        recycled_bytes = 0;
+        scheduler.CollectGarbage();
+        transfer_buffers.ReclaimAfterOutOfMemory(alloc_size, "cached buffer");
         buffer = create();
         if (buffer) {
             LOG_INFO(Render, "D3D12: cached buffer created after reclaiming");
@@ -446,14 +459,23 @@ ComPtr<ID3D12Resource> BufferCacheRuntime::CreateDefaultBuffer(u64 size) {
 
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>&) noexcept {
     ++recycle_frame;
+    const auto mem = device.QueryCacheMemoryPressure();
+    const bool pressured = mem.app_limit != 0 && mem.AppFree() <= 512ULL * 1024 * 1024;
+    const u64 max_frames = pressured ? PRESSURE_RECYCLED_FRAMES : RECYCLED_FRAMES;
+    const u64 max_bytes = pressured ? PRESSURE_RECYCLED_BYTES : MAX_RECYCLED_BYTES;
     for (size_t i = 0; i < recycled.size();) {
-        if (recycle_frame - recycled[i].frame < RECYCLED_FRAMES) {
+        if (recycle_frame - recycled[i].frame < max_frames) {
             ++i;
             continue;
         }
         recycled_bytes -= recycled[i].size;
         scheduler.DeferRelease(std::move(recycled[i].resource));
         recycled[i] = std::move(recycled.back());
+        recycled.pop_back();
+    }
+    while (recycled_bytes > max_bytes && !recycled.empty()) {
+        recycled_bytes -= recycled.back().size;
+        scheduler.DeferRelease(std::move(recycled.back().resource));
         recycled.pop_back();
     }
     if (recycle_frame % 1800 == 0 && recycle_hits + recycle_misses != 0) {
