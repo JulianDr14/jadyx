@@ -211,6 +211,21 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 config.pso_lend = line != "pso_lend=0";
                 WriteDiag(config.pso_lend ? "boot.cfg: waiters lend their CPUs to pipeline builds"
                                           : "boot.cfg: waiters keep their CPUs from pipeline builds");
+            } else if (line.starts_with("pso_retained_wait=")) {
+                config.pso_retained_wait = line != "pso_retained_wait=0";
+                WriteDiag(config.pso_retained_wait
+                              ? "boot.cfg: multi-session PSO wait retention enabled"
+                              : "boot.cfg: multi-session PSO wait retention disabled");
+            } else if (line.starts_with("pso_wait_cap=")) {
+                config.pso_wait_cap = std::min(
+                    static_cast<u32>(std::strtoul(line.c_str() + 13, nullptr, 10)), 4096U);
+                WriteDiag("boot.cfg: PSO previous-session wait priority cap " +
+                          std::to_string(config.pso_wait_cap));
+            } else if (line.starts_with("pso_keep_sessions=")) {
+                config.pso_keep_sessions = std::clamp(
+                    static_cast<u32>(std::strtoul(line.c_str() + 18, nullptr, 10)), 1U, 256U);
+                WriteDiag("boot.cfg: PSO hot-set session retention window " +
+                          std::to_string(config.pso_keep_sessions));
             } else {
                 WriteDiag("boot.cfg: IGNORED unknown pipeline key " + line);
             }
@@ -565,6 +580,9 @@ void ParseBootConfigFile(const std::string& install_path, BootConfig& config) {
                 line.starts_with("pso_priority=") ||
                 line.starts_with("pso_boost=") ||
                 line.starts_with("pso_lend=") ||
+                line.starts_with("pso_retained_wait=") ||
+                line.starts_with("pso_wait_cap=") ||
+                line.starts_with("pso_keep_sessions=") ||
                 line.starts_with("pso_blobs=")) {
                 parse_pipeline_key(line);
                 continue;

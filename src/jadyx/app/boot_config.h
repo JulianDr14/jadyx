@@ -110,9 +110,12 @@ struct BootConfig {
     /// critical. Base of every build ("pso_priority=", default 0); a build some thread waits for
     /// ("pso_boost=", default 0, off).
     u32 pso_priority{0};
-    u32 pso_boost{0};
+    u32 pso_boost{2};
     /// A thread blocked on a pipeline lends its CPUs to the build ("pso_lend=0" turns it off).
     bool pso_lend{true};
+    bool pso_retained_wait{true};
+    u32 pso_wait_cap{1536};
+    u32 pso_keep_sessions{64};
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};

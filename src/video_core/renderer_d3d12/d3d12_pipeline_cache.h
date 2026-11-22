@@ -72,6 +72,9 @@ void SetPipelineEviction(bool enabled);
 /// Diagnostics: false never builds dormant PSOs ahead of their first draw, for A/B timing of the
 /// background prewarm. Set before boot (boot.cfg "pso_prewarm=0").
 void SetPipelinePrewarm(bool enabled);
+void SetRetainMultiSessionWaits(bool enabled);
+void SetWaitPriorityCap(u32 cap);
+void SetHotKeepSessions(u32 sessions);
 
 /// Compute shaders dispatched with few groups, whose work is a stride loop over their local id,
 /// run each guest group as `factor` real groups (Shader::Optimization::WorkgroupSplitPass) to
@@ -286,6 +289,7 @@ private:
 
     // Residency, GPU thread only once the disk cache is loaded.
     HotPipelineSet hot_pipelines;
+    PsoFrameWaits pso_frame_waits;
     std::filesystem::path hot_pipelines_filename;
     bool hot_pipelines_dirty{};
     std::vector<GraphicsPipeline*> residency_sweep; ///< Every graphics pipeline; never shrinks.
@@ -308,6 +312,8 @@ private:
     std::vector<GraphicsPipeline*> prewarm_order;
     size_t prewarm_cursor{};
     GraphicsPipeline* prewarm_last{}; ///< Queued last; the next waits until it is built.
+    static constexpr size_t LOADING_PREWARM_WORKERS = 4;
+    std::array<GraphicsPipeline*, LOADING_PREWARM_WORKERS> loading_prewarm_inflight{};
     PrewarmPacer prewarm_pacer;
     /// pso_loading: prewarm_order from here on holds released pipelines to build again.
     size_t prewarm_rebuild_from{SIZE_MAX};

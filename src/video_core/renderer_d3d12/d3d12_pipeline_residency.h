@@ -4,10 +4,13 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -145,6 +148,50 @@ private:
     std::uint64_t probed{};
 };
 
+/// threshold and are already learned individually.
+class PsoFrameWaits {
+public:
+    static constexpr std::uint64_t MIN_MEMBER_US = 8000;
+    static constexpr std::uint64_t MIN_FRAME_US = 32000;
+    static constexpr std::size_t MAX_MEMBERS = 32;
+
+    void Record(std::uint64_t key, std::uint64_t wait_us) {
+        if (wait_us < MIN_MEMBER_US) {
+            return;
+        }
+        total_us = (std::min)(MIN_FRAME_US, total_us + (std::min)(MIN_FRAME_US, wait_us));
+        if (wait_us >= MIN_FRAME_US) {
+            return; // Long waits are already learned individually.
+        }
+        if (count < entries.size()) {
+            entries[count++] = {key, wait_us};
+            return;
+        }
+        const auto cheapest = std::ranges::min_element(entries, {}, &Entry::wait_us);
+        if (wait_us > cheapest->wait_us) {
+            *cheapest = {key, wait_us};
+        }
+    }
+
+    void Finish(auto&& learn) {
+        if (total_us >= MIN_FRAME_US) {
+            for (const auto& [key, wait_us] : std::span{entries}.first(count)) {
+                learn(key, wait_us);
+            }
+        }
+        count = 0;
+        total_us = 0;
+    }
+
+private:
+    struct Entry {
+        std::uint64_t key, wait_us;
+    };
+    std::array<Entry, MAX_MEMBERS> entries{};
+    std::size_t count{};
+    std::uint64_t total_us{};
+};
+
 /// The pipelines drawn in a game's recent sessions, by key hash, persisted next to its disk
 /// cache. Each session marks what it draws; a pipeline not drawn for KEEP_SESSIONS sessions is
 /// forgotten, so the set follows where the player is instead of growing with the whole game.
@@ -153,31 +200,82 @@ public:
     /// Short test launches count as sessions too: with 4, a few of them in a row forgot the areas
     /// played before, and their PSOs were built again mid-game. MAX_PREWARM still bounds boot.
     static constexpr std::uint32_t KEEP_SESSIONS = 16;
-    /// Pipelines built at boot at most, most recently drawn first.
+    /// Pipelines built at boot at most.
     static constexpr std::size_t MAX_PREWARM = 4096;
+    /// Reserve a small part of the existing cap for expensive waits from the previous route.
+    static constexpr std::size_t MAX_WAIT_PRIORITY = 512;
+    /// Taken from recency slots, leaving the existing long-wait tier intact.
+    static constexpr std::size_t MAX_FRAME_WAIT_PRIORITY = 128;
+    /// Multi-session wait retention: costly waits from earlier kept sessions (up to KEEP_SESSIONS)
+    /// retain priority after the immediate previous session's tiers are filled.
+    static constexpr std::size_t MAX_RETAINED_WAIT_PRIORITY = 1024;
+    static constexpr std::uint64_t MIN_DORMANT_WAIT_US = PsoFrameWaits::MIN_FRAME_US;
+    static constexpr std::uint64_t REAL_STALL_BIAS_US = 1000000;
     /// With no history yet (first session, or a file of an older format), the first pipelines
     /// of the disk cache, which is in the order they were first seen: the start of the game.
     static constexpr std::size_t FIRST_SESSION_PREWARM = 2048;
 
+    /// Scores observed GPU/recorder waits strictly above background worker build times whose
+    /// latency was already absorbed asynchronously before the draw waited.
+    [[nodiscard]] static constexpr std::uint64_t EffectiveLearnedWaitUs(
+        std::uint64_t observed_wait_us, std::uint64_t total_build_us) noexcept {
+        if (observed_wait_us >= MIN_DORMANT_WAIT_US) {
+            return REAL_STALL_BIAS_US + (std::min)(observed_wait_us, std::uint64_t{3000000});
+        }
+        if (total_build_us >= MIN_DORMANT_WAIT_US) {
+            return (std::min)(total_build_us, REAL_STALL_BIAS_US - 1);
+        }
+        return 0;
+    }
+
+    void SetWaitPriorityCap(std::size_t cap) noexcept {
+        wait_priority_cap = (std::min)(cap, MAX_PREWARM);
+    }
+    void SetKeepSessions(std::uint32_t sessions) noexcept {
+        keep_sessions = sessions == 0 ? 1u : sessions;
+    }
+    void SetRetainMultiSessionWaits(bool enabled) noexcept {
+        retain_multi_session_waits = enabled;
+    }
+    [[nodiscard]] bool RetainsMultiSessionWaits() const noexcept {
+        return retain_multi_session_waits;
+    }
+
     /// Starts a session from a saved file; an empty, damaged or foreign one starts with no history.
     void Load(std::span<const std::uint8_t> bytes) {
         last_used.clear();
+        prewarm.clear();
+        wait_priority.clear();
+        wait_priority_count = 0;
+        retained_wait_priority.clear();
+        retained_wait_priority_count = 0;
         session = 1;
-        if (bytes.size() < HEADER_SIZE || std::memcmp(bytes.data(), MAGIC, sizeof(MAGIC)) != 0 ||
-            Read32(bytes, 4) != VERSION) {
+        if (bytes.size() < HEADER_SIZE || std::memcmp(bytes.data(), MAGIC, sizeof(MAGIC)) != 0) {
             return;
         }
+        const auto version = Read32(bytes, 4);
+        if (version < 1 || version > VERSION) {
+            return;
+        }
+        const std::size_t entry_size =
+            version == 1 ? LEGACY_ENTRY_SIZE : version == 2 ? RECENCY_ENTRY_SIZE : ENTRY_SIZE;
         const std::uint32_t saved_session = Read32(bytes, 8);
         const std::uint32_t count = Read32(bytes, 12);
-        if (bytes.size() != HEADER_SIZE + std::size_t{count} * ENTRY_SIZE) {
+        if (saved_session == std::numeric_limits<std::uint32_t>::max() ||
+            count != (bytes.size() - HEADER_SIZE) / entry_size ||
+            (bytes.size() - HEADER_SIZE) % entry_size != 0) {
             return;
         }
         session = saved_session + 1;
         for (std::uint32_t i = 0; i < count; ++i) {
-            const std::size_t offset = HEADER_SIZE + std::size_t{i} * ENTRY_SIZE;
+            const std::size_t offset = HEADER_SIZE + std::size_t{i} * entry_size;
             const std::uint32_t entry_session = Read32(bytes, offset + 8);
-            if (entry_session < session && session - entry_session <= KEEP_SESSIONS) {
-                last_used.emplace(Read64(bytes, offset), entry_session);
+            if (entry_session < session && session - entry_session <= keep_sessions) {
+                last_used.emplace(Read64(bytes, offset),
+                                  Usage{entry_session, version == 1 ? 0 : Read64(bytes, offset + 12),
+                                        version == VERSION
+                                            ? (std::min)(Read32(bytes, offset + 20), MAX_WAIT_US)
+                                            : 0});
             }
         }
         BuildPrewarm();
@@ -201,13 +299,78 @@ public:
         return last_used.contains(hash);
     }
 
-    /// Marks a pipeline drawn this session; true the first time, when the set needs saving.
-    bool MarkUsed(std::uint64_t hash) {
-        auto [it, inserted] = last_used.try_emplace(hash, session);
-        if (!inserted && it->second == session) {
+    /// Session first, then the last frame drawn: the area most recently played gets priority
+    /// within the unchanged boot cap. Legacy profiles have no frame order and keep hash ties.
+    [[nodiscard]] std::pair<std::uint32_t, std::uint64_t> Recency(std::uint64_t hash) const {
+        const auto it = last_used.find(hash);
+        return it == last_used.end() ? std::pair<std::uint32_t, std::uint64_t>{}
+                                    : std::pair{it->second.session, it->second.frame};
+    }
+
+    /// Sort descending by known, tier (previous-session long/short wait ahead of older retained
+    /// waits ahead of zero-wait recency), wait/session, and last frame.
+    using BackgroundRank =
+        std::tuple<bool, std::uint32_t, std::uint32_t, std::uint32_t, std::uint64_t>;
+    [[nodiscard]] BackgroundRank RankForBackground(std::uint64_t hash) const {
+        const auto it = last_used.find(hash);
+        if (it == last_used.end()) {
+            return {};
+        }
+        const auto& usage = it->second;
+        const bool prev_session = usage.session + 1 == session;
+        const bool allow_wait = retain_multi_session_waits || prev_session;
+        const auto wait_us =
+            allow_wait && usage.wait_us >= PsoFrameWaits::MIN_MEMBER_US ? usage.wait_us : 0;
+        if (wait_us == 0) {
+            return {true, 0, usage.session, 0, usage.frame};
+        }
+        const bool long_wait = wait_us >= MIN_DORMANT_WAIT_US;
+        const std::uint32_t tier = (prev_session ? 2u : 0u) + (long_wait ? 2u : 1u);
+        const std::uint32_t primary = prev_session ? wait_us : usage.session;
+        const std::uint32_t secondary = prev_session ? usage.session : wait_us;
+        return {true, tier, primary, secondary, usage.frame};
+    }
+
+    /// Updates at most once per pipeline per frame; true when a periodic save is needed.
+    /// No clock or allocation is added to repeated draws of an existing pipeline.
+    bool MarkUsed(std::uint64_t hash, std::uint64_t frame = 0) {
+        auto [it, inserted] = last_used.try_emplace(hash, Usage{session, frame});
+        if (!inserted && it->second.session == session && it->second.frame >= frame) {
             return false;
         }
-        it->second = session;
+        it->second.session = session;
+        it->second.frame = frame;
+        return true;
+    }
+
+    /// Called after a successful wait for a dormant or serializable new pipeline.
+    bool RecordBuildWait(std::uint64_t hash, std::uint64_t wait_us) {
+        if (wait_us < MIN_DORMANT_WAIT_US) {
+            return false;
+        }
+        const auto it = last_used.find(hash);
+        if (it == last_used.end() || it->second.session != session) {
+            return false;
+        }
+        const auto cost = static_cast<std::uint32_t>((std::min)(wait_us, std::uint64_t{MAX_WAIT_US}));
+        if (it->second.wait_us == cost) {
+            return false;
+        }
+        it->second.wait_us = cost;
+        return true;
+    }
+
+    /// A short member of a costly frame keeps its own duration. Preserve stronger prior evidence.
+    bool RecordFrameWait(std::uint64_t hash, std::uint64_t wait_us) {
+        if (wait_us < PsoFrameWaits::MIN_MEMBER_US || wait_us >= MIN_DORMANT_WAIT_US) {
+            return false;
+        }
+        const auto it = last_used.find(hash);
+        if (it == last_used.end() || it->second.session != session ||
+            it->second.wait_us >= wait_us) {
+            return false;
+        }
+        it->second.wait_us = static_cast<std::uint32_t>(wait_us);
         return true;
     }
 
@@ -219,6 +382,24 @@ public:
         return prewarm.size();
     }
 
+    [[nodiscard]] std::size_t WaitPriorityCount() const noexcept {
+        return wait_priority_count;
+    }
+
+    [[nodiscard]] std::size_t RetainedWaitPriorityCount() const noexcept {
+        return retained_wait_priority_count;
+    }
+
+    /// Frozen at load, before MarkUsed changes the current session's last-use records.
+    [[nodiscard]] bool WaitPriority(std::uint64_t hash) const {
+        return wait_priority.contains(hash);
+    }
+
+    /// Frozen at load: costly pipelines from older kept sessions preserved past the immediate route.
+    [[nodiscard]] bool RetainedWaitPriority(std::uint64_t hash) const {
+        return retained_wait_priority.contains(hash);
+    }
+
     [[nodiscard]] std::vector<std::uint8_t> Serialize() const {
         std::vector<std::uint8_t> bytes(HEADER_SIZE + last_used.size() * ENTRY_SIZE);
         std::memcpy(bytes.data(), MAGIC, sizeof(MAGIC));
@@ -226,9 +407,11 @@ public:
         Write32(bytes, 8, session);
         Write32(bytes, 12, static_cast<std::uint32_t>(last_used.size()));
         std::size_t offset = HEADER_SIZE;
-        for (const auto& [hash, entry_session] : last_used) {
+        for (const auto& [hash, usage] : last_used) {
             Write64(bytes, offset, hash);
-            Write32(bytes, offset + 8, entry_session);
+            Write32(bytes, offset + 8, usage.session);
+            Write64(bytes, offset + 12, usage.frame);
+            Write32(bytes, offset + 20, usage.wait_us);
             offset += ENTRY_SIZE;
         }
         return bytes;
@@ -236,25 +419,90 @@ public:
 
 private:
     static constexpr char MAGIC[4] = {'D', '3', 'H', 'P'};
-    static constexpr std::uint32_t VERSION = 1;
+    static constexpr std::uint32_t VERSION = 3;
     static constexpr std::size_t HEADER_SIZE = 16;
-    static constexpr std::size_t ENTRY_SIZE = 12;
+    static constexpr std::size_t LEGACY_ENTRY_SIZE = 12;
+    static constexpr std::size_t RECENCY_ENTRY_SIZE = 20;
+    static constexpr std::size_t ENTRY_SIZE = 24;
+    static constexpr std::uint32_t MAX_WAIT_US = 4000000;
+
+    struct Usage {
+        std::uint32_t session;
+        std::uint64_t frame;
+        std::uint32_t wait_us{};
+    };
 
     void BuildPrewarm() {
-        std::vector<std::pair<std::uint32_t, std::uint64_t>> by_recency;
+        std::vector<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>> by_recency;
+        std::vector<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>> by_wait;
+        decltype(by_wait) by_frame_wait;
         by_recency.reserve(last_used.size());
-        for (const auto& [hash, entry_session] : last_used) {
-            by_recency.emplace_back(entry_session, hash);
+        for (const auto& [hash, usage] : last_used) {
+            by_recency.emplace_back(usage.session, usage.frame, hash);
+            if (usage.session == session - 1 && usage.wait_us >= PsoFrameWaits::MIN_MEMBER_US) {
+                auto& ranked = usage.wait_us >= MIN_DORMANT_WAIT_US ? by_wait : by_frame_wait;
+                ranked.emplace_back(usage.wait_us, usage.frame, hash);
+            }
         }
-        // Most recent session first; ties by hash, so the choice does not depend on map order.
-        std::sort(by_recency.begin(), by_recency.end(),
-                  [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first
-                                                                                : a.second < b.second; });
-        by_recency.resize((std::min)(by_recency.size(), MAX_PREWARM));
-        prewarm.clear();
-        for (const auto& entry : by_recency) {
-            prewarm.insert(entry.second);
+        const auto select = [this](auto& entries, std::size_t limit) {
+            const auto end = entries.begin() + (std::min)(entries.size(), limit);
+            std::partial_sort(entries.begin(), end, entries.end(),
+                              [](const auto& a, const auto& b) {
+                                  if (std::get<0>(a) != std::get<0>(b)) {
+                                      return std::get<0>(a) > std::get<0>(b);
+                                  }
+                                  if (std::get<1>(a) != std::get<1>(b)) {
+                                      return std::get<1>(a) > std::get<1>(b);
+                                  }
+                                  return std::get<2>(a) < std::get<2>(b);
+                              });
+            for (auto it = entries.begin(); it != end && prewarm.size() < MAX_PREWARM; ++it) {
+                prewarm.insert(std::get<2>(*it));
+            }
+        };
+        select(by_wait, wait_priority_cap);
+        wait_priority = prewarm;
+        wait_priority_count = prewarm.size();
+        select(by_frame_wait, MAX_FRAME_WAIT_PRIORITY);
+        if (retain_multi_session_waits) {
+            using RetainedEntry =
+                std::tuple<bool, std::uint32_t, std::uint32_t, std::uint64_t, std::uint64_t>;
+            std::vector<RetainedEntry> by_retained_wait;
+            for (const auto& [hash, usage] : last_used) {
+                if (usage.wait_us >= PsoFrameWaits::MIN_MEMBER_US && !prewarm.contains(hash)) {
+                    by_retained_wait.emplace_back(usage.wait_us >= MIN_DORMANT_WAIT_US,
+                                                  usage.session, usage.wait_us, usage.frame, hash);
+                }
+            }
+            const auto retained_end =
+                by_retained_wait.begin() +
+                (std::min)(by_retained_wait.size(), MAX_RETAINED_WAIT_PRIORITY);
+            std::partial_sort(by_retained_wait.begin(), retained_end, by_retained_wait.end(),
+                              [](const RetainedEntry& a, const RetainedEntry& b) {
+                                  if (std::get<0>(a) != std::get<0>(b)) {
+                                      return std::get<0>(a) > std::get<0>(b);
+                                  }
+                                  if (std::get<1>(a) != std::get<1>(b)) {
+                                      return std::get<1>(a) > std::get<1>(b);
+                                  }
+                                  if (std::get<2>(a) != std::get<2>(b)) {
+                                      return std::get<2>(a) > std::get<2>(b);
+                                  }
+                                  if (std::get<3>(a) != std::get<3>(b)) {
+                                      return std::get<3>(a) > std::get<3>(b);
+                                  }
+                                  return std::get<4>(a) < std::get<4>(b);
+                              });
+            for (auto it = by_retained_wait.begin();
+                 it != retained_end && prewarm.size() < MAX_PREWARM; ++it) {
+                const auto hash = std::get<4>(*it);
+                if (prewarm.insert(hash).second) {
+                    retained_wait_priority.insert(hash);
+                }
+            }
+            retained_wait_priority_count = retained_wait_priority.size();
         }
+        select(by_recency, MAX_PREWARM);
     }
 
     static std::uint32_t Read32(std::span<const std::uint8_t> bytes, std::size_t offset) {
@@ -275,8 +523,15 @@ private:
     }
 
     std::uint32_t session{1};
-    std::unordered_map<std::uint64_t, std::uint32_t> last_used; ///< hash -> last session drawn
+    std::uint32_t keep_sessions{KEEP_SESSIONS};
+    std::size_t wait_priority_cap{MAX_WAIT_PRIORITY};
+    bool retain_multi_session_waits{false};
+    std::unordered_map<std::uint64_t, Usage> last_used;
     std::unordered_set<std::uint64_t> prewarm;                  ///< chosen at Load
+    std::unordered_set<std::uint64_t> wait_priority;            ///< At most MAX_WAIT_PRIORITY.
+    std::size_t wait_priority_count{};
+    std::unordered_set<std::uint64_t> retained_wait_priority;   ///< At most MAX_RETAINED_WAIT_PRIORITY.
+    std::size_t retained_wait_priority_count{};
 };
 
 } // namespace D3D12
