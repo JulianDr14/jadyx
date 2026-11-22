@@ -37,6 +37,10 @@ struct CatalogRow {
     bool installed = false;
     std::string installed_version;   // empty when not installed
     std::string recommended_version; // what the catalog recommends; may be empty
+    /// The row's game in `installed`, or NoInstalled. With several copies of a title, the best:
+    /// an accepted version first, then any known version, then one whose version is unknown.
+    std::size_t installed_index = NoInstalled;
+    static constexpr std::size_t NoInstalled = ~std::size_t{0};
 };
 
 /// One row per catalog game. Installed games come first, by verdict then name; the rest by name.
