@@ -457,7 +457,7 @@ std::optional<StagingBufferRef> StagingBufferPool::RelieveMemoryPressure(size_t 
             VideoCore::Perf::Add(VideoCore::Perf::Counter::StagingStreamWaits, 1);
         }
         // Deferred releases (textures, buffers) return their memory once their tick has passed.
-        scheduler.CollectGarbage();
+        scheduler.CollectGarbage(true);
         if (auto ref = TryGetReservedBuffer(size, usage, deferred)) {
             return ref;
         }

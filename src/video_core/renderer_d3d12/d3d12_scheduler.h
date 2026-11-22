@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/thread_worker.h"
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/d3d12_resource_utils.h"
@@ -150,6 +151,10 @@ public:
     /// Releases object and then runs retire after the same GPU tick completes. Used by placed
     /// resources to return their heap range only after the resource itself is no longer in use.
     void DeferRelease(ComPtr<IUnknown> object, std::function<void()>&& retire);
+    /// Drops an object that is already idle on the background reaper thread. Callers that reset
+    /// their MemoryAccount charge when queueing rather than in a retire callback briefly
+    /// under-report until the reaper destroys the COM object.
+    void DeferReleaseImmediate(ComPtr<IUnknown> object);
 
     /// Called right before each submission (e.g. to end open queries or flush barriers).
     void RegisterOnSubmit(std::function<void()>&& func) {
@@ -166,8 +171,9 @@ public:
         on_reset.clear();
     }
 
-    /// Frees retired allocators and released objects; called on every flush and frame.
-    void CollectGarbage();
+    /// Frees retired allocators and released objects; pass wait_reaper=true when memory must be
+    /// reclaimed synchronously before retrying a failed allocation or shutting down.
+    void CollectGarbage(bool wait_reaper = false);
 
     [[nodiscard]] auto RecorderStatistics() const noexcept { return recorder->ReadStatistics(); }
 
@@ -248,6 +254,9 @@ private:
     std::map<std::pair<char, std::array<uintptr_t, SYNC_SITE_FRAMES>>, u64> sync_sites;
 
     Device& device;
+    /// Declared before the queues and pools below so it outlives them during member destruction;
+    /// ~Scheduler also drains pending_releases and waits for queued COM releases first.
+    Common::ThreadWorker release_worker{1, "D3D12Reaper", {}, Common::ThreadPlacement::Background};
     ComPtr<ID3D12Fence> fence;
 
     // Owned by whoever records the list's calls: the worker, or the recording thread without one.

@@ -505,7 +505,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
         };
         const bool pressure = pressured(before);
         const auto old_stats = GetStats();
-        scheduler.CollectGarbage();
+        scheduler.CollectGarbage(true);
         find_space();
         // Waiting stalled the GPU thread on most pressured misses. Only wait when even an exact
         // heap would exhaust the budget and retiring work could return enough to hold this one.
@@ -523,7 +523,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
                     ++state->pressure_waits;
                 }
                 scheduler.Wait(previous);
-                scheduler.CollectGarbage();
+                scheduler.CollectGarbage(true);
                 find_space();
             }
         }
@@ -674,7 +674,7 @@ TextureResourceAllocator::Resource TextureResourceAllocator::CreateImpl(
         if (current > 1) {
             scheduler.Wait(current - 1);
         }
-        scheduler.CollectGarbage();
+        scheduler.CollectGarbage(true);
         TrimEmptyHeaps(TrimMode::All);
         hr = create_committed();
     }
@@ -725,7 +725,13 @@ void TextureResourceAllocator::TrimEmptyHeaps(TrimMode mode) {
         state->heap_bytes -= block.size;
         state->trimmed_bytes += block.size;
         ++state->trimmed_heaps;
-        block.heap.Reset();
+        if (mode == TrimMode::All) {
+            block.heap.Reset();
+        } else {
+            // block.charge is reset right below, so ledger accounting drops when the release is
+            // queued rather than when D3D12Reaper destroys the heap; OOM retries pass TrimMode::All.
+            scheduler.DeferReleaseImmediate(std::move(block.heap));
+        }
         block.free_ranges.clear();
         block.charge.Reset();
         block.size = 0;
