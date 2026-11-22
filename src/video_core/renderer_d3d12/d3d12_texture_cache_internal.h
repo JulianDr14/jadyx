@@ -50,6 +50,8 @@ void AstcMaskSwizzle(VideoCommon::AstcMask mask,
                      std::array<Tegra::Texture::SwizzleSource, 4>& swizzle);
 FormatInfo NativeFormat(PixelFormat format);
 std::optional<FormatInfo> DecodedBcFormat(PixelFormat format);
+/// DecodedBcFormat for an image of this type (unsigned BC6H volumes are R11G11B10).
+std::optional<FormatInfo> DecodedBcFormat(PixelFormat format, ImageType type);
 /// Whether d3d12_bcn_decoder.comp decodes this guest format (BC1-5, BC7).
 bool CanDecodeBcnOnGpu(PixelFormat format);
 D3D12_RESOURCE_DIMENSION Dimension(ImageType type);
@@ -135,6 +137,7 @@ inline bool logged_view_family = false;
 /// Sampler keys for SamplerHeap; 0 is the presenter's linear sampler.
 inline std::atomic<u64> next_sampler_key{1};
 inline std::atomic<bool> decode_bc_arrays{true};
+inline std::atomic<u8> decode_bc_3d{0};
 inline std::atomic<bool> gpu_astc_decode{true};
 inline std::atomic<bool> gpu_bc_decode{true};
 inline std::atomic<bool> gpu_unswizzle{true};

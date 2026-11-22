@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstring>
 #include <span>
+#include <vector>
 #include <bc_decoder.h>
 
 #include "common/common_types.h"
@@ -97,7 +98,6 @@ void DecompressBlocks(std::span<const u8> input, std::span<u8> output, BufferIma
     const u32 height = copy.image_extent.height * copy.image_subresource.num_layers;
     const u32 depth = copy.image_extent.depth;
     const u32 block_width = (std::min)(width, BLOCK_SIZE);
-    const u32 block_height = (std::min)(height, BLOCK_SIZE);
     const u32 pitch = width * out_bpp;
     // Cropping the decoded block to a 1/2/3-texel mip width does not change the
     // compressed block's 4-texel width. Otherwise the next block row is read at
@@ -126,25 +126,37 @@ void DecompressBlocks(std::span<const u8> input, std::span<u8> output, BufferIma
         }
     }
 
+    // Each array layer starts a new row of blocks, so a layer whose height is not a multiple of
+    // four (the 2x2 and 1x1 levels of a cube map, for example) owns the padding rows of its last
+    // block. Decoding all layers as one tall image read those padding rows as the next layer's
+    // texels and every later layer from the wrong block: in a 2x2 six-layer level, layer 1 got
+    // layer 0's padding and layer 2 got layer 1's texels. Decode and crop each layer on its own.
+    const u32 layers = static_cast<u32>((std::max)(copy.image_subresource.num_layers, 1));
+    const u32 layer_height = copy.image_extent.height;
+    const u32 layer_block_height = (std::min)(layer_height, BLOCK_SIZE);
     size_t input_offset = 0;
     size_t output_offset = 0;
     for (u32 slice = 0; slice < depth; ++slice) {
-        for (u32 y = 0; y < height; y += block_height) {
-            size_t src_offset = input_offset;
-            size_t dst_offset = output_offset;
-            for (u32 x = 0; x < width; x += block_width) {
-                const u8* src = input.data() + src_offset;
-                u8* const dst = output.data() + dst_offset;
-                if constexpr (IsSigned(pixel_format)) {
-                    decompress(src, dst, x, y, width, height, is_signed);
-                } else {
-                    decompress(src, dst, x, y, width, height);
+        for (u32 layer = 0; layer < layers; ++layer) {
+            for (u32 y = 0; y < layer_height; y += layer_block_height) {
+                size_t src_offset = input_offset;
+                size_t dst_offset = output_offset;
+                for (u32 x = 0; x < width; x += block_width) {
+                    const u8* src = input.data() + src_offset;
+                    u8* const dst = output.data() + dst_offset;
+                    if constexpr (IsSigned(pixel_format)) {
+                        decompress(src, dst, x, y, width, layer_height, is_signed);
+                    } else {
+                        decompress(src, dst, x, y, width, layer_height);
+                    }
+                    src_offset += block_size;
+                    dst_offset += block_width * out_bpp;
                 }
-                src_offset += block_size;
-                dst_offset += block_width * out_bpp;
+                input_offset += input_row_pitch;
+                output_offset += static_cast<size_t>(
+                                     (std::min)(layer_block_height, layer_height - y)) *
+                                 pitch;
             }
-            input_offset += input_row_pitch;
-            output_offset += block_height * pitch;
         }
     }
 }
@@ -249,6 +261,56 @@ void DecompressBCn(std::span<const u8> input, std::span<u8> output, BufferImageC
         break;
     default:
         LOG_WARNING(HW_GPU, "Unimplemented BCn decompression {}", pixel_format);
+    }
+}
+
+namespace {
+/// A non-negative half float as the 11-bit (6 mantissa bits) or 10-bit (5) float of
+/// R11G11B10_FLOAT, rounded to nearest. The 5-bit exponent is the same, so dropping low mantissa
+/// bits with a rounding carry is the whole conversion; overflow clamps to the largest finite
+/// value, negatives and NaN become 0 (unsigned BC6H decodes neither).
+u32 PackSmallFloat(u16 half, u32 mantissa_bits) noexcept {
+    const u32 exponent = (half >> 10) & 0x1F;
+    if ((half & 0x8000) != 0 || (exponent == 0x1F && (half & 0x3FF) != 0)) {
+        return 0;
+    }
+    const u32 drop = 10 - mantissa_bits;
+    const u32 max_finite = (0x1Eu << mantissa_bits) | ((1u << mantissa_bits) - 1);
+    if (exponent == 0x1F) {
+        return max_finite;
+    }
+    const u32 packed = (static_cast<u32>(half) + (1u << (drop - 1))) >> drop;
+    return (std::min)(packed, max_finite);
+}
+} // Anonymous namespace
+
+bool PacksBc6hAsR11G11B10(PixelFormat pixel_format, ImageType type) noexcept {
+    return type == ImageType::e3D && pixel_format == PixelFormat::BC6H_UFLOAT;
+}
+
+u32 ConvertedBytesPerBlock(PixelFormat pixel_format, ImageType type) {
+    return PacksBc6hAsR11G11B10(pixel_format, type) ? 4 : ConvertedBytesPerBlock(pixel_format);
+}
+
+void DecompressBCn(std::span<const u8> input, std::span<u8> output, BufferImageCopy& copy,
+                   PixelFormat pixel_format, ImageType type) {
+    if (!PacksBc6hAsR11G11B10(pixel_format, type)) {
+        DecompressBCn(input, output, copy, pixel_format);
+        return;
+    }
+    // Decode one level to RGBA16F, then keep the three channels as R11G11B10.
+    const size_t texels = static_cast<size_t>(copy.image_extent.width) *
+                          copy.image_extent.height * copy.image_extent.depth *
+                          static_cast<size_t>((std::max)(copy.image_subresource.num_layers, 1));
+    static thread_local std::vector<u8> scratch;
+    scratch.resize(texels * 8);
+    DecompressBCn(input, scratch, copy, pixel_format);
+    for (size_t i = 0; i < texels; ++i) {
+        u16 rgb[3];
+        std::memcpy(rgb, scratch.data() + i * 8, sizeof(rgb));
+        const u32 packed = PackSmallFloat(rgb[0], 6) | (PackSmallFloat(rgb[1], 6) << 11) |
+                           (PackSmallFloat(rgb[2], 5) << 22);
+        std::memcpy(output.data() + i * 4, &packed, sizeof(packed));
     }
 }
 
