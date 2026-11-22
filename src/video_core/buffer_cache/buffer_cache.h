@@ -400,6 +400,11 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     if (!cpu_src_address || !cpu_dest_address) {
         return false;
     }
+    if (amount > MAX_BUFFER_REQUEST) [[unlikely]] {
+        // A corrupt length: dropping the copy keeps guest memory intact and the game running.
+        LOG_ERROR(HW_GPU, "DMA: dropped a {} MiB buffer copy", amount >> 20);
+        return true;
+    }
     const bool source_dirty = IsRegionRegistered(*cpu_src_address, amount);
     const bool dest_dirty = IsRegionRegistered(*cpu_dest_address, amount);
     if (!source_dirty && !dest_dirty) {
@@ -468,6 +473,10 @@ bool BufferCache<P>::DMAClear(GPUVAddr dst_address, u64 amount, u32 value) {
     if (!cpu_dst_address) {
         return false;
     }
+    if (amount * sizeof(u32) > MAX_BUFFER_REQUEST) [[unlikely]] {
+        LOG_ERROR(HW_GPU, "DMA: dropped a {} MiB buffer clear", (amount * sizeof(u32)) >> 20);
+        return true;
+    }
     const bool dest_dirty = IsRegionRegistered(*cpu_dst_address, amount);
     if (!dest_dirty) {
         return false;
@@ -500,6 +509,9 @@ template <class P>
 std::pair<typename P::Buffer*, u32> BufferCache<P>::ObtainCPUBuffer(
     DAddr device_addr, u32 size, ObtainBufferSynchronize sync_info, ObtainBufferOperation post_op) {
     geo_role = GeoHunt::Role::Other;
+    if (size > MAX_BUFFER_REQUEST) [[unlikely]] {
+        return {&slot_buffers[NULL_BUFFER_ID], 0};
+    }
     const BufferId buffer_id = FindBuffer(device_addr, size, false);
     Buffer& buffer = slot_buffers[buffer_id];
 
@@ -2012,6 +2024,14 @@ void BufferCache<P>::NoteWriteOrigin(ReadbackTrace::WriteOrigin origin, DAddr de
 template <class P>
 BufferId BufferCache<P>::FindBuffer(DAddr device_addr, u32 size, bool sparse_compatible) {
     if (device_addr == 0) {
+        return NULL_BUFFER_ID;
+    }
+    if (size > MAX_BUFFER_REQUEST) [[unlikely]] {
+        static std::atomic<u32> reported{0};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_ERROR(HW_GPU, "Buffer cache: refused a {} MiB buffer at 0x{:x}", size >> 20,
+                      device_addr);
+        }
         return NULL_BUFFER_ID;
     }
     const u64 page = device_addr >> CACHING_PAGEBITS;

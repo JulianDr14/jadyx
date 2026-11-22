@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <functional>
 #include <fmt/format.h>
@@ -90,6 +91,9 @@ enum class ObtainBufferOperation : u32 {
 
 static constexpr BufferId NULL_BUFFER_ID{0};
 static constexpr u32 DEFAULT_SKIP_CACHE_SIZE = static_cast<u32>(4_KiB);
+/// Largest single buffer request the cache serves. Guest RAM is 4 GiB, so a request past this
+/// comes from a corrupt address or length; creating it exhausts host memory and closes the game.
+static constexpr u64 MAX_BUFFER_REQUEST = 512_MiB;
 
 struct Binding {
     DAddr device_addr{};

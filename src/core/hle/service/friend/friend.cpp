@@ -41,12 +41,12 @@ public:
             {10421, nullptr, "EnsureBlockedUserListAvailable"},
             {10500, nullptr, "GetProfileList"},
             {10501, nullptr, "GetProfileListV2"}, // 18.0.0+
-            {10600, nullptr, "DeclareOpenOnlinePlaySession"},
+            {10600, &IFriendService::DeclareOpenOnlinePlaySession, "DeclareOpenOnlinePlaySession"},
             {10601, &IFriendService::DeclareCloseOnlinePlaySession, "DeclareCloseOnlinePlaySession"},
             {10610, &IFriendService::UpdateUserPresence, "UpdateUserPresence"},
             {10700, &IFriendService::GetPlayHistoryRegistrationKey, "GetPlayHistoryRegistrationKey"},
             {10701, nullptr, "GetPlayHistoryRegistrationKeyWithNetworkServiceAccountId"},
-            {10702, nullptr, "AddPlayHistory"},
+            {10702, &IFriendService::AddPlayHistory, "AddPlayHistory"},
             {11000, nullptr, "GetProfileImageUrl"},
             {11001, nullptr, "GetProfileImageUrlV2"}, // 18.0.0+
             {20100, &IFriendService::GetFriendCount, "GetFriendCount"},
@@ -269,6 +269,20 @@ private:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
         rb.Push(true);
+    }
+
+    void DeclareOpenOnlinePlaySession(HLERequestContext& ctx) {
+        // Online matchmaking declares the session before it joins; an unanswered command aborts it.
+        LOG_WARNING(Service_Friend, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void AddPlayHistory(HLERequestContext& ctx) {
+        // Records the players met in an online match. There is no friend server to keep it.
+        LOG_WARNING(Service_Friend, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
     }
 
     void DeclareCloseOnlinePlaySession(HLERequestContext& ctx) {
