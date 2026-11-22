@@ -233,6 +233,9 @@ struct ReportEntry {
 /// an emulator thread. Empty while the tracker is off. Re-arms every site without detail keys, so
 /// the next report carries the message of its first hit in that game, not in an earlier one.
 [[nodiscard]] std::vector<ReportEntry> TakeReport(std::size_t max_entries);
+/// The report TakeReport would return now, without taking it: the counts stay for the next
+/// TakeReport and no site is re-armed. Same threading rules.
+[[nodiscard]] std::vector<ReportEntry> PeekReport(std::size_t max_entries);
 /// Writes the final summary and stops the writer.
 void Shutdown();
 /// Crash handlers only: appends pending first occurrences with plain C stdio, without locks.
