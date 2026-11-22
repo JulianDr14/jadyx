@@ -2635,7 +2635,10 @@ private:
                 const auto label = ControllerLabel(view.panel.devices, view.options.controller_id);
                 summary = view.options.controller_id.empty() ? I18n::Format(T::AutomaticValue, {label}) : label;
             } else {
-                summary = KeysValue(status) + L" · " + FirmwareValue(status);
+                // Firmware newer than the keys: the version first, then the warning in place of the keys.
+                summary = status.keys_ready && status.versions.KeysOlderThanFirmware() ?
+                    FirmwareValue(status) + L" · " + std::wstring{Tr(T::KeysOutdated)} :
+                    KeysValue(status) + L" · " + FirmwareValue(status);
             }
             const unsigned color = chosen ? Palette::Text : Palette::TextSecondary;
             Icon(icons[i], x + 18, y + (h - 22) / 2, color, 22);
@@ -2653,9 +2656,11 @@ private:
             Round(x, y, w, 204, 18, Palette::Surface, 0.82f);
             Outline(x + 0.5f, y + 0.5f, w - 1, 203, 18, 0xffffff, 0.06f);
             Type(Tr(T::EmulatorData), TypeRole::Caps, x + 20, y + 20, 200, Palette::TextSecondary);
-            const auto keys = Tr(status.keys_ready ? T::KeysReady : T::KeysMissing);
+            // Keys older than the firmware still run games, but part of the firmware stays sealed.
+            const bool outdated = status.keys_ready && status.versions.KeysOlderThanFirmware();
+            const auto keys = Tr(!status.keys_ready ? T::KeysMissing : outdated ? T::KeysOutdated : T::KeysReady);
             const float chip = MeasureType(keys, TypeRole::Label) + 24;
-            Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready ? Palette::Text : Palette::Warning);
+            Chip(keys, x + w - 20 - chip, y + 15, status.keys_ready && !outdated ? Palette::Text : Palette::Warning);
             const float tile_w = (w - 40 - 12) / 2;
             const auto tile = [&](float tx, std::wstring_view label, const std::wstring& value) {
                 Round(tx, y + 54, tile_w, 68, 12, Palette::Canvas, 0.7f);

@@ -21,11 +21,12 @@ struct Revision {
     bool developer{};
 };
 inline bool RequirementsSatisfied(const Revision& r, std::uint32_t application, std::uint32_t system) {
-    // Only major.minor of the system version count: micro releases (and the relstep below them)
-    // are bug fixes that add no API, and content asking for 23.0.1 runs on HLE 23.0.0.
-    constexpr std::uint32_t major_minor = 0xFFF00000;
+    // Only the major system version counts. Point releases (minor, micro and relstep) keep the
+    // services HLE already provides, and content asking for 23.5.0 runs on HLE 23.0.0; a newer
+    // major still blocks, since it may bring services HLE does not have yet.
+    constexpr std::uint32_t major = 0xFC000000;
     return r.required_application <= application &&
-           (r.required_system & major_minor) <= (system & major_minor);
+           (r.required_system & major) <= (system & major);
 }
 inline bool ValidId(const std::string& id) {
     return id.size() == 64 && std::all_of(id.begin(), id.end(), [](char c) {

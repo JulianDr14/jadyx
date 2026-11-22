@@ -63,6 +63,10 @@ SystemImportBackend DefaultSystemImportBackend();
 struct InstalledSystemVersions {
     std::string firmware; ///< Empty when unknown: no firmware, or not read yet.
     int key_generation{-1};
+    /// The newest key generation the firmware's NCAs use; above key_generation when the firmware
+    /// is newer than the keys (it installs, with its newest NCAs sealed).
+    int firmware_generation{-1};
+    bool KeysOlderThanFirmware() const { return key_generation >= 0 && firmware_generation > key_generation; }
 };
 /// The cached versions (memory, then a small file); opens nothing else, so it is safe anytime.
 InstalledSystemVersions ReadInstalledSystemVersions();
