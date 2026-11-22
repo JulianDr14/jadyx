@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 Jadyx Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "jadyx/library/library_session.h"
+
+#include <unordered_set>
+
 #include "jadyx/library/controller_sections.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/input/dsu_client.h"
@@ -1136,41 +1139,54 @@ void LibrarySession::PollNextendo() {
     }
     if (tab != LibraryTab::Online) return;
     std::size_t titles = 0;
-    for (const auto& entry : scan.entries) titles += entry.program_id != 0;
+    // FNV-1a over each game's title id and version: a few hundred short strings, Online tab only.
+    std::uint64_t versions = 1469598103934665603ull;
+    const auto mix = [&versions](std::uint64_t value) {
+        versions = (versions ^ value) * 1099511628211ull;
+    };
+    for (const auto& entry : scan.entries) {
+        if (entry.program_id == 0) continue;
+        ++titles;
+        mix(entry.program_id);
+        for (const auto c : entry.display_version) mix(static_cast<std::uint64_t>(c));
+        mix(0);
+    }
     // A rescan that moved the games under the rows makes them again too.
     bool moved = false;
     for (std::size_t row = 0; row < page.entries.size() && !moved; ++row)
         moved = page.entries[row] != NextendoPage::NoEntry &&
                 NextendoRowEntry(page, row, scan.entries) == NextendoPage::NoEntry;
-    if (version == page.games_version && titles == page.library_titles && !moved) return;
+    if (version == page.games_version && titles == page.library_titles &&
+        versions == page.library_versions && !moved)
+        return;
     page.games_version = version;
     page.library_titles = titles;
+    page.library_versions = versions;
     // A few hundred rows at most, and only when something changed: made again whole.
     std::vector<Nx::InstalledTitle> installed;
     std::vector<std::size_t> installed_entry;
     installed.reserve(titles);
     installed_entry.reserve(titles);
+    // A title with its base game in the library is represented by its base game entries only.
+    std::unordered_set<std::uint64_t> with_base;
+    for (const auto& entry : scan.entries)
+        if (entry.program_id != 0 && FileSys::GetBaseTitleID(entry.program_id) == entry.program_id)
+            with_base.insert(entry.program_id);
     for (std::size_t i = 0; i < scan.entries.size(); ++i) {
         const auto& entry = scan.entries[i];
         if (entry.program_id == 0) continue;
+        const auto base = FileSys::GetBaseTitleID(entry.program_id);
+        if (base != entry.program_id && with_base.contains(base)) continue;
         installed.push_back({FileSys::GetBaseTitleID(entry.program_id), OnlineNarrow(entry.name),
                              OnlineNarrow(entry.display_version)});
         installed_entry.push_back(i);
     }
     page.games = Nx::BuildCatalogRows(Nx::ServiceCatalog(), installed);
-    // Each installed row's game in the scan: the first entry of its title, the base game first.
+    // Each installed row's game in the scan: the copy whose version the row shows.
     page.entries.assign(page.games.size(), NextendoPage::NoEntry);
     for (std::size_t row = 0; row < page.games.size(); ++row) {
-        if (!page.games[row].installed) continue;
-        for (std::size_t i = 0; i < installed.size(); ++i) {
-            if (installed[i].title_id != page.games[row].title_id) continue;
-            const auto entry = installed_entry[i];
-            auto& chosen = page.entries[row];
-            if (chosen == NextendoPage::NoEntry ||
-                (scan.entries[entry].program_id == page.games[row].title_id &&
-                 scan.entries[chosen].program_id != page.games[row].title_id))
-                chosen = entry;
-        }
+        const auto index = page.games[row].installed_index;
+        if (index < installed_entry.size()) page.entries[row] = installed_entry[index];
     }
     page.game = page.games.empty() ? 0 : std::min(page.game, page.games.size() - 1);
     if (page.games.empty()) page.in_games = false;

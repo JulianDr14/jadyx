@@ -1093,6 +1093,27 @@ void TestCatalogRows() {
     Check(found);
     Check(App::TitleIdText(0x01006A800016E000ULL) == "01006A800016E000");
     Check(App::BuildCatalogRows(GameCatalog{}, installed).empty());
+
+    // Two copies of a title: the accepted version wins wherever it was scanned, and an unknown
+    // version (an update not read yet) loses to any known one.
+    const std::vector<App::InstalledTitle> copies{
+        {0x0100000000030000ULL, "Zeta", ""},
+        {0x0100000000030000ULL, "Zeta", "1.0.0"},
+        {0x0100000000030000ULL, "Zeta", "2.0.0"},
+        {0x0100000000040000ULL, "Beta", ""},
+        {0x0100000000040000ULL, "Beta", "0.9.0"},
+    };
+    for (const auto& row : App::BuildCatalogRows(catalog, copies)) {
+        if (row.title_id == 0x0100000000030000ULL) {
+            Check(row.verdict == RowVerdict::Ready && row.installed_version == "2.0.0" &&
+                  row.installed_index == 2);
+        } else if (row.title_id == 0x0100000000040000ULL) {
+            Check(row.verdict == RowVerdict::WrongVersion && row.installed_version == "0.9.0" &&
+                  row.installed_index == 4);
+        } else {
+            Check(row.installed_index == App::CatalogRow::NoInstalled);
+        }
+    }
 }
 
 // BCAT packages: the server's answers, the ZIP layout rules, when to reinstall.

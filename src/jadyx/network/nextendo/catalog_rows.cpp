@@ -57,17 +57,32 @@ std::vector<CatalogRow> BuildCatalogRows(const Nx::GameCatalog& catalog,
         row.title_id = game.title_ids.front();
         row.recommended_version = game.recommended_version;
         row.name = game.name;
-        const auto owned = std::find_if(installed.begin(), installed.end(), [&](const InstalledTitle& title) {
-            return std::find(game.title_ids.begin(), game.title_ids.end(), title.title_id) !=
-                   game.title_ids.end();
-        });
-        if (owned != installed.end()) {
+        // A title may sit in the library more than once (two dumps, or a copy whose update is not
+        // read yet): the row shows the best copy, not the first one scanned.
+        int best_rank = 3;
+        RowVerdict best_verdict = RowVerdict::NotInstalled;
+        for (std::size_t i = 0; i < installed.size(); ++i) {
+            const auto& title = installed[i];
+            if (std::find(game.title_ids.begin(), game.title_ids.end(), title.title_id) ==
+                game.title_ids.end()) {
+                continue;
+            }
+            const auto verdict = VerdictOf(Nx::CheckTitle(catalog, title.title_id, title.version).support);
+            const int rank = verdict == RowVerdict::Ready ? 0 : !title.version.empty() ? 1 : 2;
+            if (rank < best_rank) {
+                best_rank = rank;
+                best_verdict = verdict;
+                row.installed_index = i;
+            }
+        }
+        if (row.installed_index != CatalogRow::NoInstalled) {
+            const auto& owned = installed[row.installed_index];
             row.installed = true;
-            row.title_id = owned->title_id;
-            row.installed_version = owned->version;
-            row.verdict = VerdictOf(Nx::CheckTitle(catalog, owned->title_id, owned->version).support);
+            row.title_id = owned.title_id;
+            row.installed_version = owned.version;
+            row.verdict = best_verdict;
             if (row.name.empty()) {
-                row.name = owned->name;
+                row.name = owned.name;
             }
         } else if (!game.enabled) {
             row.verdict = RowVerdict::Disabled;

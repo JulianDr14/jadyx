@@ -339,13 +339,14 @@ public:
         return crash_path;
     }
 
-    std::vector<ReportEntry> TakeReport(std::size_t max_entries) {
+    /// `consume` false reads the same report without moving the reported counts or re-arming.
+    std::vector<ReportEntry> TakeReport(std::size_t max_entries, bool consume = true) {
         std::scoped_lock lock{data_mutex};
         Drain(); // first occurrences still queued belong to this report
         std::vector<ReportEntry> report;
-        const auto take = [](std::uint64_t now, std::uint64_t& reported) {
+        const auto take = [consume](std::uint64_t now, std::uint64_t& reported) {
             const std::uint64_t delta = now > reported ? now - reported : 0;
-            reported = now;
+            if (consume) reported = now;
             return delta;
         };
         for (EntryInfo& entry : entries) {
@@ -360,8 +361,10 @@ public:
                                                             : std::string{"(message not captured)"}});
                 }
                 // Re-arm the site: its next hit (the next game) captures a fresh message.
-                entry.message_current = false;
-                site.seen.store(false, std::memory_order_relaxed);
+                if (consume) {
+                    entry.message_current = false;
+                    site.seen.store(false, std::memory_order_relaxed);
+                }
                 continue;
             }
             for (DetailInfo& detail : entry.details) {
@@ -859,6 +862,14 @@ std::vector<ReportEntry> TakeReport(std::size_t max_entries) {
         return {};
     }
     return writer->TakeReport(max_entries);
+}
+
+std::vector<ReportEntry> PeekReport(std::size_t max_entries) {
+    std::scoped_lock lock{install_mutex};
+    if (!writer) {
+        return {};
+    }
+    return writer->TakeReport(max_entries, false);
 }
 
 void RequestFlush() noexcept {

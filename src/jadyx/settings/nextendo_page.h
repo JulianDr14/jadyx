@@ -36,6 +36,9 @@ struct NextendoPage {
     std::uint64_t version = ~std::uint64_t{0}; ///< The service's, for the copy below (none yet).
     std::uint64_t games_version = ~std::uint64_t{0}; ///< The service's when `games` was made.
     std::size_t library_titles{};     ///< Library games with a known title id, when `games` was made.
+    /// A hash of those games' title ids and versions, when `games` was made: switching a game's
+    /// active update, or the background fill reading it, changes a version and nothing else.
+    std::uint64_t library_versions{};
     Network::Nextendo::Preferences preferences;
     Network::Nextendo::SessionView view;
     /// The account picture's bytes (the header and the account card draw it); null: the initial.

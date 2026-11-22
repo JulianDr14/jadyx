@@ -4,6 +4,7 @@
 #include "jadyx/network/error_report.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -26,7 +27,6 @@
 
 #include "common/bug_tracker.h"
 #include "common/scm_rev.h"
-#include "common/settings.h"
 #include "jadyx/app/boot_diag.h"
 #include "jadyx/mods/work_queue.h"
 #include "jadyx/network/http.h"
@@ -334,8 +334,20 @@ bool Worth(const Common::BugTracker::ReportEntry& entry) {
     }
 }
 
+/// The tracked bugs worth reporting, capped. `take` moves them out of the tracker (the game
+/// ended); otherwise they stay for the next read (a checkpoint of the running game).
+std::vector<Common::BugTracker::ReportEntry> Collect(bool take) {
+    constexpr auto All = std::numeric_limits<std::size_t>::max();
+    auto report = take ? Common::BugTracker::TakeReport(All) : Common::BugTracker::PeekReport(All);
+    std::erase_if(report, [](const auto& entry) { return !Worth(entry); });
+    if (report.size() > MaxEntries) report.resize(MaxEntries);
+    return report;
+}
+
+/// How the session ended: "closed" from GameEnded, "interrupted" for a checkpoint found at the
+/// next launch (the app was closed by force, suspended and terminated, or crashed).
 std::string Build(const Game& game, const std::vector<Common::BugTracker::ReportEntry>& report,
-                  nlohmann::json load) {
+                  nlohmann::json load, const char* ended) {
     nlohmann::json entries = nlohmann::json::array();
     for (const auto& entry : report) {
         std::string message = Scrub(entry.message);
@@ -358,6 +370,7 @@ std::string Build(const Game& game, const std::vector<Common::BugTracker::Report
         {"game_version", game.version},
         {"entries", std::move(entries)},
         {"load", std::move(load)},
+        {"ended", ended},
     };
     return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
@@ -372,6 +385,26 @@ bool Post(const std::string& body, std::stop_token stop) {
     request.max_bytes = 64u << 10;
     const auto response = Http::Send(request, stop);
     return response.status >= 200 && response.status < 300;
+}
+
+/// The running game's report, rewritten every sample. GameEnded removes it; one still there at
+/// launch belongs to a session that never reached GameEnded. Not ".json", so SendKept skips it.
+std::filesystem::path LiveFile(const std::filesystem::path& folder) {
+    return folder / L"live.session";
+}
+
+/// Writes through a temporary file, so a kill mid-write leaves the previous checkpoint whole.
+void WriteLive(const std::filesystem::path& folder, const std::string& body) {
+    if (folder.empty()) return;
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    const auto temp = folder / L"live.session.tmp";
+    {
+        std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+        file.write(body.data(), static_cast<std::streamsize>(body.size()));
+        if (!file) return;
+    }
+    std::filesystem::rename(temp, LiveFile(folder), error);
 }
 
 void Keep(const std::filesystem::path& folder, const std::string& body) {
@@ -416,7 +449,33 @@ Mods::WorkQueue& Queue() {
     return queue;
 }
 
+/// A checkpoint waits in the queue (behind a slow send); the next sample skips its own.
+std::atomic<bool> checkpoint_queued{false};
+
 } // namespace
+
+void SendLeftovers() {
+    if (!Enabled()) return;
+    static std::once_flag once; // the library launches several games in one process
+    std::call_once(once, [] {
+        Queue().Post([](std::stop_token stop) {
+            const auto folder = PendingFolder();
+            if (folder.empty()) return;
+            std::error_code error;
+            const auto live = LiveFile(folder);
+            if (std::filesystem::exists(live, error)) {
+                std::ifstream file(live, std::ios::binary);
+                const std::string body{std::istreambuf_iterator<char>(file),
+                                       std::istreambuf_iterator<char>()};
+                file.close();
+                if (!body.empty()) Keep(folder, body);
+                std::filesystem::remove(live, error);
+                WriteDiag("error report: kept the report of a session that did not end normally");
+            }
+            SendKept(folder, stop);
+        });
+    });
+}
 
 void GameStarted(std::uint64_t title_id, std::string title, std::string version) {
     if (!Enabled()) return; // a build without JADYX_REPORT_URL sends nothing
@@ -463,6 +522,20 @@ void SampleLoad(const Common::MemoryCeilings& ceilings) {
     load.last_ms = now;
     load.last_cpu_us = cpu;
     load.last_gpu_us = gpu;
+
+    // Checkpoint the report on the report thread: if the session never reaches GameEnded, the
+    // next launch sends what was saved here (at most one sample old).
+    if (checkpoint_queued.exchange(true, std::memory_order_acq_rel)) return;
+    Queue().Post([game = current_game](std::stop_token) {
+        checkpoint_queued.store(false, std::memory_order_release);
+        const auto report = Collect(false);
+        if (report.empty()) return;
+        const auto end = game.load.last_ms;
+        WriteLive(PendingFolder(),
+                  Build(game, report,
+                        DescribeLoad(game.load, end, game.load.last_cpu_us, game.load.last_gpu_us),
+                        "interrupted"));
+    });
 }
 
 void GameEnded() {
@@ -473,16 +546,21 @@ void GameEnded() {
     }
     if (game.title_id == 0) return;
     // Take every bug (this also re-arms the tracker), keep the worthwhile ones, then cap.
-    auto report = Common::BugTracker::TakeReport(std::numeric_limits<std::size_t>::max());
-    std::erase_if(report, [](const auto& entry) { return !Worth(entry); });
-    if (report.size() > MaxEntries) report.resize(MaxEntries);
-    // Airplane mode: no network at all; the counts are dropped with the session.
-    if (report.empty() || Settings::values.airplane_mode.GetValue()) return;
-    WriteDiag(fmt::format("error report: {} distinct bugs for {:016X}, sending", report.size(),
-                          game.title_id));
-    auto load = DescribeLoad(game.load, NowMs(), ProcessCpuUs(), GpuBusyUs());
-    Queue().Post([body = Build(game, report, std::move(load))](std::stop_token stop) {
+    // The game's offline mode is not checked: it keeps the game off the internet, not the app.
+    const auto report = Collect(true);
+    std::string body;
+    if (!report.empty()) {
+        WriteDiag(fmt::format("error report: {} distinct bugs for {:016X}, sending",
+                              report.size(), game.title_id));
+        body = Build(game, report, DescribeLoad(game.load, NowMs(), ProcessCpuUs(), GpuBusyUs()),
+                     "closed");
+    }
+    // Queued after this game's checkpoints, so none of them outlives this removal.
+    Queue().Post([body = std::move(body)](std::stop_token stop) {
         const auto folder = PendingFolder();
+        std::error_code error;
+        if (!folder.empty()) std::filesystem::remove(LiveFile(folder), error);
+        if (body.empty()) return;
         if (!Post(body, stop)) {
             Keep(folder, body);
             WriteDiag("error report: not sent, kept for the next game");

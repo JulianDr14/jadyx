@@ -50,6 +50,7 @@
 #include "jadyx/input/uwp_input.h"
 #include "jadyx/library/game_library.h"
 #include "jadyx/library/uwp_library.h"
+#include "jadyx/network/error_report.h"
 #include "jadyx/network/nextendo/service.h"
 #include "jadyx/pulse/pulse_sessions.h"
 #include "jadyx/settings/uwp_system_settings.h"
@@ -552,6 +553,8 @@ struct BootView : implements<BootView, IFrameworkViewSource, IFrameworkView> {
         const Jadyx::BootSurface surface = ReadWindowSurface(m_window);
         // Nextendo's account keeps itself signed in in the background; it stops with the app.
         Jadyx::Network::Nextendo::StartWorker();
+        // Reports of earlier sessions: a game closed by force, or a send that failed.
+        Jadyx::ErrorReport::SendLeftovers();
         struct NextendoStop {
             ~NextendoStop() { Jadyx::Network::Nextendo::StopWorker(); }
         } nextendo_stop;
