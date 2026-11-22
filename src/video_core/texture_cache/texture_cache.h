@@ -2231,8 +2231,13 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     for (const ImageId overlap_id : join_ignore_textures) {
         Image& overlap = slot_images[overlap_id];
-        if (True(overlap.flags & ImageFlagBits::GpuModified)) {
-            UNIMPLEMENTED();
+        if (True(overlap.flags & ImageFlagBits::GpuModified)) [[unlikely]] {
+            // The GPU-written contents of an ignored overlap are lost; note it, keep running.
+            static std::atomic<u32> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(HW_GPU, "Texture cache: dropped a GPU-written image of type {} on join",
+                            static_cast<int>(overlap.info.type));
+            }
         }
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
             UntrackImage(overlap, overlap_id);
@@ -2388,7 +2393,22 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
             continue;
         }
-        if (True(overlap.flags & ImageFlagBits::GpuModified)) {
+        // A 3D image can only take its slices from a single-level 3D image. Anything else gives
+        // copy regions outside the destination, and the Series GPU hangs on them
+        // (DXGI_ERROR_DEVICE_HUNG a few seconds later). Losing those contents is the lesser harm.
+        const bool copyable_into_3d =
+            new_info.type != ImageType::e3D ||
+            (overlap.info.type == ImageType::e3D && overlap.info.resources.levels == 1);
+        if (!copyable_into_3d && True(overlap.flags & ImageFlagBits::GpuModified)) [[unlikely]] {
+            static std::atomic<u32> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(HW_GPU,
+                            "Texture cache: dropped a join copy into a 3D image from type {} with "
+                            "{} levels",
+                            static_cast<int>(overlap.info.type), overlap.info.resources.levels);
+            }
+        }
+        if (copyable_into_3d && True(overlap.flags & ImageFlagBits::GpuModified)) {
             new_image.flags |= ImageFlagBits::GpuModified;
             VideoCommon::GpuWrittenPages::Mark(new_image.cpu_addr, new_image.cpu_addr_end - new_image.cpu_addr);
             const auto& resolution = Settings::values.resolution_info;
