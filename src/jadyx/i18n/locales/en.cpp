@@ -310,6 +310,7 @@ const Catalog EnglishCatalog = MakeCatalog({
     {Text::SystemVersionUnknown, L"Some version information could not be verified. Review the source before continuing."},
     {Text::SystemFirmwareGamesRemoved, L"Game files found in the firmware package were left out. Only the firmware will be installed."},
     {Text::SystemReviewReady, L"Files validated. Review and confirm installation in Jadyx Portal."},
+    {Text::SystemFirmwareKeysOlder, L"This firmware is newer than your keys. It will install and games will run, but part of the firmware stays unreadable until you import newer keys."},
     {Text::SystemWaiting, L"Waiting for files from Jadyx Portal…"},
     {Text::SystemValidating, L"Validating the system files…"},
     {Text::SystemInstalling, L"Installing the system files…"},

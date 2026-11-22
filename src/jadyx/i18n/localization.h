@@ -283,6 +283,7 @@ enum class Text : std::uint16_t {
     SystemVersionUnknown,
     SystemFirmwareGamesRemoved,
     SystemReviewReady,
+    SystemFirmwareKeysOlder,
     SystemWaiting,
     SystemValidating,
     SystemInstalling,

@@ -310,6 +310,7 @@ const Catalog SpanishCatalog = MakeCatalog({
     {Text::SystemVersionUnknown, L"No se pudo verificar parte de la información de versión. Revisa el origen antes de continuar."},
     {Text::SystemFirmwareGamesRemoved, L"Se quitaron archivos de juego que venían en el paquete de firmware. Solo se instalará el firmware."},
     {Text::SystemReviewReady, L"Archivos validados. Revisa y confirma la instalación en el Portal Jadyx."},
+    {Text::SystemFirmwareKeysOlder, L"Este firmware es más nuevo que tus claves. Se instalará y los juegos funcionarán, pero parte del firmware no se podrá leer hasta que importes claves más nuevas."},
     {Text::SystemWaiting, L"Esperando archivos desde el Portal Jadyx…"},
     {Text::SystemValidating, L"Validando los archivos del sistema…"},
     {Text::SystemInstalling, L"Instalando los archivos del sistema…"},
