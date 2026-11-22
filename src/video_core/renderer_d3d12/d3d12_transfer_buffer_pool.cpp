@@ -106,7 +106,7 @@ bool TransferBufferPool::ReclaimAfterOutOfMemory(u64 size, const char* what) {
     if (current > 1) {
         scheduler.Wait(current - 1);
     }
-    scheduler.CollectGarbage();
+    scheduler.CollectGarbage(true);
     if (reclaimer) {
         reclaimer();
     }
