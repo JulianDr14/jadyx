@@ -8,12 +8,15 @@
 
 // The checks must run in any configuration: an NDEBUG build would otherwise pass vacuously.
 #undef NDEBUG
+#include <array>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <vector>
 #include "video_core/renderer_d3d12/d3d12_pipeline_residency.h"
 #include "video_core/renderer_d3d12/d3d12_pipeline_stats.h"
+#include "video_core/renderer_d3d12/d3d12_prewarm_pacer.h"
 
 namespace {
 using namespace D3D12;
@@ -47,6 +50,231 @@ void TestPrewarmGate() {
     }
     // An unknown limit is no promise of room.
     assert(!P::MayPrewarm(0, 0));
+}
+
+void TestFoldedHotPrewarmQueue() {
+    using B = AdaptivePrewarmBudget;
+    using C = B::Candidate;
+    HotPipelineSet hot;
+    constexpr std::uint64_t stored_alias = 11, folded_key = 22, direct_key = 33, unknown = 44;
+    hot.MarkUsed(stored_alias);
+    hot.MarkUsed(direct_key);
+    FoldedHotPipelineSet folded;
+    // Disk loading recognized a hot stored alias after an earlier cold record folded to 22.
+    assert(hot.Known(stored_alias) && !hot.Known(folded_key));
+    folded.MarkKnown(folded_key);
+    assert(B::Inspect(hot.Known(folded_key), false, false) == C::WaitForPlentiful);
+    B budget;
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 3584*M, 4096*M, true, false) ==
+           B::Mode::Adaptive);
+    const std::array queue{folded_key, direct_key, unknown};
+    std::size_t cursor = 0;
+    for (; cursor < queue.size(); ++cursor) {
+        const auto action = B::Inspect(folded.Known(hot, queue[cursor]), false, false);
+        if (action == C::WaitForPlentiful) break;
+        assert(action == C::TryWake);
+        budget.Queued(B::Mode::Adaptive);
+    }
+    // The folded-only head no longer strands a valid direct-known candidate behind it.
+    // The genuinely unknown tail still waits, and the ordinary 128-request budget applies.
+    assert(cursor == 2 && budget.Count() == 2 && queue[cursor] == unknown);
+    assert(B::Inspect(folded.Known(hot, folded_key), true, false) == C::Skip);
+    assert(B::Inspect(folded.Known(hot, folded_key), true, true) == C::WaitForPlentiful);
+    folded.Clear(); // a later disk load, including folding off, must not inherit aliases
+    assert(!folded.Known(hot, folded_key) && folded.Known(hot, direct_key));
+    assert(!hot.Known(folded_key)); // no synthetic draw/history entry was persisted
+    std::cout << "PASS: folded-only prewarm head advances to a direct-known candidate; "
+                 "unknown/rebuild barriers and per-load alias reset preserved\n";
+}
+
+void TestAdaptivePrewarm() {
+    using B = AdaptivePrewarmBudget;
+    using Mode = B::Mode;
+    B budget;
+    const auto choose = [&](std::uint64_t free, std::uint64_t gpu_free,
+                            bool probe = true, bool oom = false) {
+        return budget.Select(limit - free, limit, 4096*M - gpu_free, 4096*M, probe, oom);
+    };
+    assert(choose(B::APP_HEADROOM, 512 * M) == Mode::Adaptive);
+    assert(choose(B::APP_HEADROOM - 1, 512 * M) == Mode::Blocked);
+    assert(choose(B::APP_HEADROOM, 512 * M - 1) == Mode::Blocked);
+    assert(choose(B::APP_HEADROOM, 512 * M, false) == Mode::Blocked);
+    assert(choose(B::APP_HEADROOM, 512 * M, true, true) == Mode::Blocked);
+    assert(budget.Select(0, 0, 0, 4096*M, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 0, 0, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 0, 128*M, true, false) == Mode::Blocked);
+    assert(budget.Select(limit + 1, limit, 0, 4096*M, true, false) == Mode::Blocked);
+    assert(budget.Select(4096*M, limit, 4096*M + 1, 4096*M, true, false) == Mode::Blocked);
+    using Candidate = B::Candidate;
+    for (bool known : {false, true}) for (bool evicted : {false, true}) {
+        for (bool rebuild : {false, true}) {
+            const auto action = B::Inspect(known, evicted, rebuild);
+            if (evicted && !rebuild) assert(action == Candidate::Skip);
+            else if (!known || evicted) assert(action == Candidate::WaitForPlentiful);
+            else assert(action == Candidate::TryWake);
+        }
+    }
+    for (unsigned i = 0; i < B::MAX_QUEUED; ++i) {
+        budget.Queued(Mode::Plentiful);
+        budget.Queued(Mode::Blocked);
+        assert(budget.Count() == i && choose(B::APP_HEADROOM, 512 * M) == Mode::Adaptive);
+        budget.Queued(Mode::Adaptive);
+    }
+    assert(budget.Count() == B::MAX_QUEUED);
+    assert(choose(B::APP_HEADROOM, 512 * M) == Mode::Blocked);
+    budget.Queued(Mode::Adaptive);
+    assert(budget.Count() == B::MAX_QUEUED);
+    budget.SetCap(256);
+    assert(budget.Cap() == 256 && choose(B::APP_HEADROOM, 512 * M) == Mode::Adaptive);
+    budget.SetCap(99999);
+    assert(budget.Cap() == B::MAX_CONFIGURED_CAP);
+    budget.SetCap(0);
+    assert(budget.Cap() == 0 && choose(B::APP_HEADROOM, 512 * M) == Mode::Blocked);
+    // The legacy path keeps working with unknown GPU budgets, OOM history or a spent allowance.
+    assert(budget.Select(0, limit, 0, 0, false, true) == Mode::Plentiful);
+    B fresh;
+    std::size_t cases = 0;
+    for (std::uint64_t free = 0; free <= limit; free += 16*M) {
+        for (std::uint64_t gpu_free = 0; gpu_free <= 4096*M; gpu_free += 16*M) {
+            for (bool probe : {false, true}) for (bool oom : {false, true}) {
+                const auto mode = fresh.Select(limit-free, limit, 4096*M-gpu_free,
+                                               4096*M, probe, oom);
+                const bool plentiful = PipelineResidencyPolicy::MayPrewarm(limit-free, limit);
+                assert((mode == Mode::Plentiful) == plentiful);
+                if (!plentiful) {
+                    assert((mode == Mode::Adaptive) ==
+                           (probe && !oom && free >= B::APP_HEADROOM && gpu_free >= B::GPU_HEADROOM));
+                }
+                ++cases;
+            }
+        }
+    }
+    // Loading screens can remove the normal rest, but not the adaptive allowance's minimum.
+    using namespace std::chrono_literals;
+    PrewarmPacer pacer;
+    const auto start = PrewarmPacer::Clock::time_point{} + 10ms;
+    pacer.rest = 0;
+    pacer.Queued(start);
+    assert(B::MinimumRest(Mode::Plentiful, false) == 0);
+    assert(B::MinimumRest(Mode::Adaptive, false) == B::MIN_REST);
+    assert(B::MinimumRest(Mode::Adaptive, true) == B::MIN_REST);
+    const int rest_after_adaptive = B::MinimumRest(Mode::Plentiful, true);
+    assert(rest_after_adaptive == B::MIN_REST);
+    assert(!pacer.Rested(start + 10ms, rest_after_adaptive));
+    assert(!pacer.Rested(start + 79ms, rest_after_adaptive));
+    assert(pacer.Rested(start + 80ms, rest_after_adaptive));
+    std::cout << "PASS: adaptive prewarm " << cases << " quota/probe/OOM combinations, 128-queue cap, loading-screen pacing\n";
+}
+
+void TestPrewarmBlockedCompletion() {
+    using namespace std::chrono_literals;
+    using Clock = PrewarmPacer::Clock;
+    const auto queued = Clock::time_point{} + 100s;
+    const auto observed = queued + 100ms;
+    const auto unblocked = queued + 500s;
+
+    // Reproduce the old call order: first Rested only after the memory policy allows work.
+    // A 100 ms build is mismeasured as 500 seconds and then requires 3500 seconds of rest.
+    PrewarmPacer delayed;
+    delayed.Queued(queued);
+    assert(!delayed.Rested(unblocked, 7));
+    assert(!delayed.Rested(queued + 3999s, 7));
+    assert(delayed.Rested(queued + 4000s, 7));
+
+    // New caller observes IsBuilt before policy/disabled/empty-queue exits. Repeated blocked
+    // ticks leave that first observation intact, including on a loading screen (rest=0).
+    std::size_t cases = 0;
+    for (int rest : {0, 3}) for (int minimum : {0, 7}) {
+        for (auto blocked_for : {0ms, 1ms, 299ms, 300ms, 699ms, 700ms, 500000ms}) {
+            PrewarmPacer pacer;
+            pacer.rest = rest;
+            pacer.Queued(queued);
+            pacer.ObserveBuilt(observed);
+            pacer.ObserveBuilt(observed + blocked_for);
+            const auto required_rest = 100ms * (std::max)(rest, minimum);
+            assert(pacer.Rested(observed + blocked_for, minimum) ==
+                   (blocked_for >= required_rest));
+            if (required_rest > 0ms) {
+                assert(!pacer.Rested(observed + required_rest - 1ms, minimum));
+            }
+            assert(pacer.Rested(observed + required_rest, minimum));
+            ++cases;
+        }
+    }
+
+    PrewarmPacer repeated;
+    repeated.Queued(queued);
+    repeated.ObserveBuilt(observed);
+    assert(repeated.Rested(unblocked, 7));
+    // A second queue resets the observation; no stale completion can authorize its next PSO.
+    repeated.Queued(unblocked);
+    repeated.ObserveBuilt(unblocked + 200ms);
+    assert(!repeated.Rested(unblocked + 1599ms, 7));
+    assert(repeated.Rested(unblocked + 1600ms, 7));
+    // The clock epoch is a valid queue time, not an implicit "already observed" sentinel.
+    repeated.Queued(Clock::time_point{});
+    assert(!repeated.Rested(Clock::time_point{} + 10ms, 7));
+    assert(repeated.Rested(Clock::time_point{} + 80ms, 7));
+    std::cout << "PASS: blocked-completion pacing " << cases
+              << " timing cases; legacy 3500s rest reproduced, 7x minimum/reset preserved\n";
+}
+
+void TestLoadingPrewarmAllowance() {
+    using B = AdaptivePrewarmBudget;
+    using Mode = B::Mode;
+    using namespace std::chrono_literals;
+    B budget;
+    assert(budget.LoadingCap() == 0 && budget.LoadingCount() == 0);
+    // Exhaust the regular 128 adaptive cap during gameplay.
+    for (unsigned i = 0; i < B::MAX_QUEUED; ++i) {
+        assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                             true, false, false) == Mode::Adaptive);
+        budget.Queued(Mode::Adaptive);
+    }
+    assert(budget.Count() == B::MAX_QUEUED);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         true, false, true) == Mode::Blocked); // cap still 0
+
+    budget.SetLoadingCap(99999);
+    assert(budget.LoadingCap() == B::MAX_CONFIGURED_CAP);
+    budget.SetLoadingCap(1024);
+    assert(budget.LoadingCap() == 1024);
+
+    // Loading screen opens an isolated allowance without relaxing probe/OOM/headroom gates.
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         true, false, false) == Mode::Blocked);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         true, false, true) == Mode::Loading);
+    assert(budget.Select(limit - B::APP_HEADROOM + 1, limit, 4096*M - 512*M, 4096*M,
+                         true, false, true) == Mode::Blocked);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M + 1, 4096*M,
+                         true, false, true) == Mode::Blocked);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         false, false, true) == Mode::Blocked);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         true, true, true) == Mode::Blocked);
+
+    // Loading mode builds back-to-back (MinimumRest == 0), then stops at cap 1024.
+    assert(B::MinimumRest(Mode::Loading, false) == 0);
+    assert(B::MinimumRest(Mode::Loading, true) == 0);
+    PrewarmPacer pacer;
+    pacer.rest = 0;
+    const auto t0 = PrewarmPacer::Clock::time_point{} + 10s;
+    pacer.Queued(t0);
+    pacer.ObserveBuilt(t0 + 50ms);
+    assert(pacer.Rested(t0 + 50ms, B::MinimumRest(Mode::Loading, true)));
+    pacer.rest = PrewarmPacer::REST;
+    assert(!pacer.Rested(t0 + 50ms, B::MinimumRest(Mode::Adaptive, true)));
+
+    for (unsigned i = 0; i < 1024; ++i) {
+        assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                             true, false, true) == Mode::Loading);
+        budget.Queued(Mode::Loading);
+    }
+    assert(budget.LoadingCount() == 1024 && budget.Count() == B::MAX_QUEUED);
+    assert(budget.Select(limit - B::APP_HEADROOM, limit, 4096*M - 512*M, 4096*M,
+                         true, false, true) == Mode::Blocked);
+    std::cout << "PASS: loading-screen prewarm allowance (1024 cap, zero-rest pacing, memory/OOM barriers)\n";
 }
 
 void TestReleaseProbe() {
@@ -227,6 +455,10 @@ void TestHotSet() {
 int main() {
     TestIdleFrames();
     TestPrewarmGate();
+    TestAdaptivePrewarm();
+    TestPrewarmBlockedCompletion();
+    TestFoldedHotPrewarmQueue();
+    TestLoadingPrewarmAllowance();
     TestReleaseProbe();
     TestHotSet();
     TestLatencyHistogram();
