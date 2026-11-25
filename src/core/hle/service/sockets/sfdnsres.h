@@ -31,6 +31,8 @@ private:
     void GetAddrInfoRequest(HLERequestContext& ctx);
     void GetAddrInfoRequestWithOptions(HLERequestContext& ctx);
     void ResolverSetOptionRequest(HLERequestContext& ctx);
+    void RequestCancelHandleRequest(HLERequestContext& ctx);
+    void CancelRequest(HLERequestContext& ctx);
 };
 
 class DNS_PRIV final : public ServiceFramework<DNS_PRIV> {

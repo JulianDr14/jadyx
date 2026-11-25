@@ -34,8 +34,8 @@ SFDNSRES::SFDNSRES(Core::System& system_) : ServiceFramework{system_, "sfdnsres"
         {5, &SFDNSRES::GetGaiStringErrorRequest, "GetGaiStringErrorRequest"},
         {6, &SFDNSRES::GetAddrInfoRequest, "GetAddrInfoRequest"},
         {7, nullptr, "GetNameInfoRequest"},
-        {8, nullptr, "RequestCancelHandleRequest"},
-        {9, nullptr, "CancelRequest"},
+        {8, &SFDNSRES::RequestCancelHandleRequest, "RequestCancelHandleRequest"},
+        {9, &SFDNSRES::CancelRequest, "CancelRequest"},
         {10, &SFDNSRES::GetHostByNameRequestWithOptions, "GetHostByNameRequestWithOptions"},
         {11, nullptr, "GetHostByAddrRequestWithOptions"},
         {12, &SFDNSRES::GetAddrInfoRequestWithOptions, "GetAddrInfoRequestWithOptions"},
@@ -467,6 +467,24 @@ void SFDNSRES::ResolverSetOptionRequest(HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
 
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(0); // bsd errno
+}
+
+void SFDNSRES::RequestCancelHandleRequest(HLERequestContext& ctx) {
+    // Lookups here finish before their request returns, so there is never anything to cancel and
+    // any non-zero handle works.
+    LOG_DEBUG(Service, "called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(ResultSuccess);
+    rb.Push<u32>(1); // cancel handle
+}
+
+void SFDNSRES::CancelRequest(HLERequestContext& ctx) {
+    LOG_DEBUG(Service, "called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(ResultSuccess);
     rb.Push<s32>(0); // bsd errno
 }

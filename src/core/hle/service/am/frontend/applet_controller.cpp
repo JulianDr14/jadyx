@@ -233,8 +233,10 @@ void Controller::Execute() {
     case ControllerSupportMode::ShowControllerStrapGuide:
     case ControllerSupportMode::ShowControllerFirmwareUpdate:
     case ControllerSupportMode::ShowControllerKeyRemappingForSystem:
-        UNIMPLEMENTED_MSG("ControllerSupportMode={} is not implemented",
-                          controller_private_arg.mode);
+        // Informational screens with nothing to configure; closing at once is what the player
+        // would do after reading them.
+        LOG_INFO(Service_HID, "ControllerSupportMode={} has no screen here, closing it",
+                 controller_private_arg.mode);
         ConfigurationComplete(true);
         break;
     default: {

@@ -146,7 +146,11 @@ Status BufferQueueProducer::WaitForFreeSlotThenRelock(bool async, s32* found, St
 
         // Free up any buffers that are in slots beyond the max buffer count
         for (s32 s = max_buffer_count; s < BufferQueueDefs::NUM_BUFFER_SLOTS; ++s) {
-            ASSERT_MSG(slots[s].buffer_state == BufferState::Free,
+            // SetBufferCount keeps preallocated buffers (it only frees them all when there are
+            // none), so lowering the count while one of them is queued or acquired leaves it in
+            // flight above the new max. The consumer still releases it normally and it is never
+            // dequeued again, so only a non-preallocated slot here means the state is broken.
+            ASSERT_MSG(slots[s].buffer_state == BufferState::Free || slots[s].is_preallocated,
                        "BufferQueue slot {} outside max {}: state {}, preallocated {}, "
                        "has buffer {}, override {}, default {}, queued {}",
                        s, max_buffer_count, static_cast<u32>(slots[s].buffer_state),

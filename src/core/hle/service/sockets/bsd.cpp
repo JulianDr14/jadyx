@@ -952,6 +952,13 @@ void BSD_USA::ExecuteWork(HLERequestContext& ctx, Work work) {
 }
 
 std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol protocol) {
+    // The type carries the BSD creation flags: SOCK_NONBLOCK (0x20000000) and SOCK_CLOEXEC
+    // (0x10000000, meaningless here). Split them off before the type is checked.
+    constexpr u32 SOCK_FLAG_CLOEXEC = 0x10000000;
+    constexpr u32 SOCK_FLAG_NONBLOCK = 0x20000000;
+    const bool non_blocking = (static_cast<u32>(type) & SOCK_FLAG_NONBLOCK) != 0;
+    type = static_cast<Type>(static_cast<u32>(type) & ~(SOCK_FLAG_CLOEXEC | SOCK_FLAG_NONBLOCK));
+
     // user bsd:u has restrictions on SOCK_SEQPACKET and SOCK_RAW
     if (is_user && (type == Type::SEQPACKET || type == Type::RAW)) {
         if (type == Type::RAW && domain == Domain::INET && protocol == Protocol::ICMP) {
@@ -970,10 +977,6 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
                  static_cast<u32>(domain));
         return {-1, Errno::AFNOSUPPORT};
     }
-
-    [[maybe_unused]] const bool unk_flag = (static_cast<u32>(type) & 0x20000000) != 0;
-    UNIMPLEMENTED_IF_MSG(unk_flag, "Unknown flag in type");
-    type = static_cast<Type>(static_cast<u32>(type) & ~0x20000000);
 
     const s32 fd = FindFreeFileDescriptorHandle();
     if (fd < 0) {
@@ -996,6 +999,14 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
     }
 
     descriptor.socket->Initialize(Translate(domain), Translate(type), Translate(protocol));
+    if (non_blocking) {
+        const Network::Errno nb_err = descriptor.socket->SetNonBlock(true);
+        if (nb_err == Network::Errno::SUCCESS) {
+            descriptor.flags = static_cast<s32>(Network::FLAG_O_NONBLOCK);
+        } else {
+            LOG_WARNING(Service, "socket fd={} could not be made non-blocking at creation", fd);
+        }
+    }
     descriptor.is_connection_based = IsConnectionBased(type);
     const bool is_connection_based = descriptor.is_connection_based;
     if (type == Type::DGRAM) {
@@ -1045,7 +1056,8 @@ std::pair<s32, Errno> BSD_USA::PollImpl(std::vector<u8>& write_buffer, std::span
     }
 
     for (PollFD& pollfd : fds) {
-        ASSERT(False(pollfd.revents));
+        // revents is output only; games can pass it dirty (reused pollfd arrays).
+        pollfd.revents = PollEvents{};
 
         if (pollfd.fd > static_cast<s32>(MAX_FD) || pollfd.fd < 0) {
             LOG_ERROR(Service, "File descriptor handle={} is invalid", pollfd.fd);

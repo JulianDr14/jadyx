@@ -55,6 +55,16 @@ Errno Translate(Network::Errno value) {
         return Errno::ADDRINUSE;
     case Network::Errno::ADDRNOTAVAIL:
         return Errno::ADDRNOTAVAIL;
+    case Network::Errno::FAULT:
+        return Errno::FAULT;
+    case Network::Errno::NOTSOCK:
+        return Errno::NOTSOCK;
+    case Network::Errno::NETRESET:
+        return Errno::NETRESET;
+    case Network::Errno::OTHER:
+        // The host error was already logged where it was translated; INVAL keeps the guest from
+        // treating the failed call as a success.
+        return Errno::INVAL;
     default:
         // A failed call must never reach the guest as SUCCESS: it would carry on with a socket
         // that is not bound or not connected.

@@ -29,7 +29,7 @@ public:
             {1, &IFriendService::Cancel, "Cancel"},
             {10100, &IFriendService::GetFriendListIds, "GetFriendListIds"},
             {10101, &IFriendService::GetFriendList, "GetFriendList"},
-            {10102, nullptr, "UpdateFriendInfo"},
+            {10102, &IFriendService::UpdateFriendInfo, "UpdateFriendInfo"},
             {10110, nullptr, "GetFriendProfileImage"},
             {10111, nullptr, "GetFriendProfileImageWithImageSize"}, // 18.0.0+
             {10120, &IFriendService::CheckFriendListAvailability, "CheckFriendListAvailability"},
@@ -273,6 +273,13 @@ private:
 
     void DeclareOpenOnlinePlaySession(HLERequestContext& ctx) {
         // Online matchmaking declares the session before it joins; an unanswered command aborts it.
+        LOG_WARNING(Service_Friend, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void UpdateFriendInfo(HLERequestContext& ctx) {
+        // Refreshes cached friend profiles from the friend server; there is none, so nothing changes.
         LOG_WARNING(Service_Friend, "(STUBBED) called");
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
