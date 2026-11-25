@@ -77,6 +77,8 @@ private:
     Result Connect(const ConnectNetworkData& connect_data,
                    InLargeData<NetworkInfo, BufferAttr_HipcPointer> network_info);
 
+    Result ConnectPrivate();
+
     Result Disconnect();
 
     Result Initialize(ClientProcessId aruid);
