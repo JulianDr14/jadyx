@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <utility>
 #include "common/assert.h"
@@ -41,15 +42,28 @@ Fermi2D::~Fermi2D() {
     }
 }
 
+// Methods past the register file are dropped: writing them would land outside reg_array.
+static bool DropInvalidMethod(u32 method, u32 argument) {
+    if (method < Fermi2D::Regs::NUM_REGS) [[likely]] {
+        return false;
+    }
+    VideoCommon::GeoHunt::CommandGarbage("fermi2d", method, argument);
+    static std::atomic_bool warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+        LOG_WARNING(HW_GPU, "dropping write to invalid Fermi2D method {:#x} (value {:#x}); further ones are not logged",
+                    method, argument);
+    }
+    return true;
+}
+
 void Fermi2D::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) {
     rasterizer = rasterizer_;
 }
 
 void Fermi2D::CallMethod(Core::System& system, u32 method, u32 method_argument, bool is_last_call) {
-    if (method >= Regs::NUM_REGS) [[unlikely]] {
-        VideoCommon::GeoHunt::CommandGarbage("fermi2d", method, method_argument);
+    if (DropInvalidMethod(method, method_argument)) [[unlikely]] {
+        return;
     }
-    ASSERT_MSG(method < Regs::NUM_REGS, "Invalid Fermi2D register, increase the size of the Regs structure");
     regs.reg_array[method] = method_argument;
     if (method == FERMI2D_REG_INDEX(operation)) {
         ++operation_write_count;
@@ -68,6 +82,9 @@ void Fermi2D::CallMultiMethod(Core::System& system, u32 method, const u32* base_
 
 void Fermi2D::ConsumeSinkImpl(Core::System& system) {
     for (auto [method, value] : method_sink) {
+        if (DropInvalidMethod(method, value)) [[unlikely]] {
+            continue;
+        }
         regs.reg_array[method] = value;
         if (method == FERMI2D_REG_INDEX(operation)) {
             ++operation_write_count;
