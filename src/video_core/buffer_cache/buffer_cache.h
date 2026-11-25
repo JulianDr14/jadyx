@@ -420,6 +420,10 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         buffer_a = FindBuffer(*cpu_src_address, static_cast<u32>(amount), false);
         buffer_b = FindBuffer(*cpu_dest_address, static_cast<u32>(amount), false);
     } while (channel_state->has_deleted_buffers);
+    if (buffer_a == NULL_BUFFER_ID || buffer_b == NULL_BUFFER_ID) [[unlikely]] {
+        // No host buffer to copy through: the engine copies guest memory instead.
+        return false;
+    }
     auto& src_buffer = slot_buffers[buffer_a];
     auto& dest_buffer = slot_buffers[buffer_b];
     SynchronizeBuffer(src_buffer, *cpu_src_address, static_cast<u32>(amount));
@@ -2240,6 +2244,11 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // A refused request (over MAX_BUFFER_REQUEST) gets the 4-byte null buffer: uploading the
+    // range into it staged up to 2 GiB for copies that could never land, and ran out of memory.
+    if (&buffer == &slot_buffers[NULL_BUFFER_ID]) [[unlikely]] {
+        return true;
+    }
     if (GeoHunt::Enabled()) [[unlikely]] {
         GeoHuntVerify(device_addr, size);
     }
