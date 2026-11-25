@@ -222,9 +222,6 @@ bool TranslatorVisitor::FCMLA_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4
 
     const size_t esize = 8U << size.ZeroExtend();
 
-    // TODO: We don't support the half-precision floating point variant yet.
-    ASSERT(esize != 16);
-
     const size_t index = [=] {
         if (size == 0b01) {
             return concatenate(H, L).ZeroExtend();
@@ -243,10 +240,11 @@ bool TranslatorVisitor::FCMLA_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4
     const IR::U128 operand3 = V(datasize, Vd);
     IR::U128 result = ir.ZeroVector();
 
-    IR::U32U64 element1;
-    IR::U32U64 element2;
-    IR::U32U64 element3;
-    IR::U32U64 element4;
+    // U16 too: the half-precision form runs the same FPNeg/FPMulAdd on 16-bit elements.
+    IR::U16U32U64 element1;
+    IR::U16U32U64 element2;
+    IR::U16U32U64 element3;
+    IR::U16U32U64 element4;
     for (size_t e = 0; e < num_iterations; ++e) {
         const size_t first = e * 2;
         const size_t second = first + 1;
@@ -281,8 +279,8 @@ bool TranslatorVisitor::FCMLA_elt(bool Q, Imm<2> size, Imm<1> L, Imm<1> M, Imm<4
             break;
         }
 
-        const IR::U32U64 operand3_elem1 = ir.VectorGetElement(esize, operand3, first);
-        const IR::U32U64 operand3_elem2 = ir.VectorGetElement(esize, operand3, second);
+        const IR::U16U32U64 operand3_elem1 = ir.VectorGetElement(esize, operand3, first);
+        const IR::U16U32U64 operand3_elem2 = ir.VectorGetElement(esize, operand3, second);
 
         result = ir.VectorSetElement(esize, result, first, ir.FPMulAdd(operand3_elem1, element2, element1));
         result = ir.VectorSetElement(esize, result, second, ir.FPMulAdd(operand3_elem2, element4, element3));
