@@ -30,6 +30,7 @@ private:
     void GetHostByNameRequestWithOptions(HLERequestContext& ctx);
     void GetAddrInfoRequest(HLERequestContext& ctx);
     void GetAddrInfoRequestWithOptions(HLERequestContext& ctx);
+    void GetNameInfoRequestWithOptions(HLERequestContext& ctx);
     void ResolverSetOptionRequest(HLERequestContext& ctx);
     void RequestCancelHandleRequest(HLERequestContext& ctx);
     void CancelRequest(HLERequestContext& ctx);

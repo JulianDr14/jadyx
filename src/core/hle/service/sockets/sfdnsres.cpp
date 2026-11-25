@@ -39,7 +39,7 @@ SFDNSRES::SFDNSRES(Core::System& system_) : ServiceFramework{system_, "sfdnsres"
         {10, &SFDNSRES::GetHostByNameRequestWithOptions, "GetHostByNameRequestWithOptions"},
         {11, nullptr, "GetHostByAddrRequestWithOptions"},
         {12, &SFDNSRES::GetAddrInfoRequestWithOptions, "GetAddrInfoRequestWithOptions"},
-        {13, nullptr, "GetNameInfoRequestWithOptions"},
+        {13, &SFDNSRES::GetNameInfoRequestWithOptions, "GetNameInfoRequestWithOptions"},
         {14, &SFDNSRES::ResolverSetOptionRequest, "ResolverSetOptionRequest"},
         {15, nullptr, "ResolverGetOptionRequest"},
     };
@@ -459,6 +459,35 @@ void SFDNSRES::GetAddrInfoRequestWithOptions(HLERequestContext& ctx) {
         .gai_error = emu_gai_err,
         .netdb_error = GetAddrInfoErrorToNetDbError(emu_gai_err),
         .bsd_errno = GetAddrInfoErrorToErrno(emu_gai_err),
+    });
+}
+
+void SFDNSRES::GetNameInfoRequestWithOptions(HLERequestContext& ctx) {
+    // Reverse lookups are not resolved; report "name not known" so the title falls back to the
+    // numeric address, as it would for an address without a PTR record.
+    LOG_WARNING(Service, "(STUBBED) called, reverse lookup reported as EAI_NONAME");
+
+    for (std::size_t i = 0; i < 2; ++i) {
+        if (ctx.CanWriteBuffer(i)) {
+            std::vector<u8> empty(ctx.GetWriteBufferSize(i));
+            ctx.WriteBuffer(empty, i);
+        }
+    }
+
+    constexpr GetAddrInfoError gai_err = GetAddrInfoError::NONAME;
+    struct OutputParameters {
+        GetAddrInfoError gai_error;
+        NetDbError netdb_error;
+        Errno bsd_errno;
+    };
+    static_assert(sizeof(OutputParameters) == 0xc);
+
+    IPC::ResponseBuilder rb{ctx, 5};
+    rb.Push(ResultSuccess);
+    rb.PushRaw(OutputParameters{
+        .gai_error = gai_err,
+        .netdb_error = GetAddrInfoErrorToNetDbError(gai_err),
+        .bsd_errno = GetAddrInfoErrorToErrno(gai_err),
     });
 }
 
