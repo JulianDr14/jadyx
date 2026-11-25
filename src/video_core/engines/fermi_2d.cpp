@@ -37,8 +37,8 @@ Fermi2D::Fermi2D(MemoryManager& memory_manager_) : memory_manager{memory_manager
 
 Fermi2D::~Fermi2D() {
     if (unsupported_count != 0) {
-        LOG_WARNING(HW_GPU, "Fermi2D diagnostic summary: noncopy={} distinct_snapshots={} capacity=32 operation_writes={}",
-                    unsupported_count, unsupported_state_count, operation_write_count);
+        LOG_INFO(HW_GPU, "Fermi2D diagnostic summary: noncopy={} distinct_snapshots={} capacity=32 operation_writes={}",
+                 unsupported_count, unsupported_state_count, operation_write_count);
     }
 }
 
@@ -114,21 +114,22 @@ void Fermi2D::Blit() {
             diagnostic = true;
         }
     }
-    UNIMPLEMENTED_IF_MSG(noncopy, "Operation is not copy: operation={} rop={:#x}",
-                         static_cast<u32>(regs.operation), regs.reg_array[0x2a0 / 4]);
+    // Logged once per distinct register snapshot, not on every blit.
     if (diagnostic) {
+        LOG_WARNING(HW_GPU, "Fermi2D operation is not copy: operation={} rop={:#x}",
+                    static_cast<u32>(regs.operation), regs.reg_array[0x2a0 / 4]);
         constexpr std::array names{"SrcCopyAnd", "ROPAnd", "Blend", "SrcCopy", "ROP",
                                    "SrcCopyPremult", "BlendPremult"};
         const auto operation = static_cast<u32>(regs.operation);
-        LOG_WARNING(HW_GPU, "Fermi2D diagnostic: snapshot={} occurrence={} operation={} ({}) operation_writes={} raw_register_offsets=bytes values=hex; behavior unchanged",
-                    unsupported_state_count, unsupported_count, operation,
-                    operation < names.size() ? names[operation] : "Unknown", operation_write_count);
+        LOG_DEBUG(HW_GPU, "Fermi2D diagnostic: snapshot={} occurrence={} operation={} ({}) operation_writes={} raw_register_offsets=bytes values=hex; behavior unchanged",
+                  unsupported_state_count, unsupported_count, operation,
+                  operation < names.size() ? names[operation] : "Unknown", operation_write_count);
         // Exact raw state keeps enum domains, fixed-point coordinates and control bits intact.
         for (const auto range : {std::pair{0x200u, 0x258u}, std::pair{0x260u, 0x2b8u},
                                  std::pair{0x2e8u, 0x300u}, std::pair{0x880u, 0x8e0u}}) {
             for (u32 offset = range.first; offset < range.second; offset += 4) {
-                LOG_WARNING(HW_GPU, "Fermi2D registers: snapshot={} offset={:#05x} value={:#010x}",
-                            unsupported_state_count, offset, regs.reg_array[offset / 4]);
+                LOG_DEBUG(HW_GPU, "Fermi2D registers: snapshot={} offset={:#05x} value={:#010x}",
+                          unsupported_state_count, offset, regs.reg_array[offset / 4]);
             }
         }
     }
@@ -189,10 +190,10 @@ void Fermi2D::Blit() {
     if (diagnostic) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
-        LOG_WARNING(HW_GPU, "Fermi2D result: snapshot={} accelerated={} host_elapsed_us={} src={:#x} dst={:#x} src_rect=({},{})-({},{}) dst_rect=({},{})-({},{}) pitch_adjusted={}; elapsed excludes FlushCaching and is not GPU time",
-                    unsupported_state_count, accelerated, elapsed, src.Address(), regs.dst.Address(),
-                    config.src_x0, config.src_y0, config.src_x1, config.src_y1,
-                    config.dst_x0, config.dst_y0, config.dst_x1, config.dst_y1, need_align_to_pitch);
+        LOG_DEBUG(HW_GPU, "Fermi2D result: snapshot={} accelerated={} host_elapsed_us={} src={:#x} dst={:#x} src_rect=({},{})-({},{}) dst_rect=({},{})-({},{}) pitch_adjusted={}; elapsed excludes FlushCaching and is not GPU time",
+                  unsupported_state_count, accelerated, elapsed, src.Address(), regs.dst.Address(),
+                  config.src_x0, config.src_y0, config.src_x1, config.src_y1,
+                  config.dst_x0, config.dst_y0, config.dst_x1, config.dst_y1, need_align_to_pitch);
     }
 }
 
