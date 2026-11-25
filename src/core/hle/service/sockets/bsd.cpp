@@ -1233,7 +1233,7 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
 
     switch (cmd) {
     case FcntlCmd::GETFL:
-        ASSERT(arg == 0);
+        // GETFL takes no argument; whatever the caller left in it is ignored.
         return {descriptor.flags, Errno::SUCCESS};
     case FcntlCmd::SETFL: {
         const bool enable = (arg & Network::FLAG_O_NONBLOCK) != 0;
