@@ -39,7 +39,7 @@ public:
             {10400, &IFriendService::GetBlockedUserListIds, "GetBlockedUserListIds"},
             {10420, &IFriendService::CheckBlockedUserListAvailability, "CheckBlockedUserListAvailability"},
             {10421, nullptr, "EnsureBlockedUserListAvailable"},
-            {10500, nullptr, "GetProfileList"},
+            {10500, &IFriendService::GetProfileList, "GetProfileList"},
             {10501, nullptr, "GetProfileListV2"}, // 18.0.0+
             {10600, &IFriendService::DeclareOpenOnlinePlaySession, "DeclareOpenOnlinePlaySession"},
             {10601, &IFriendService::DeclareCloseOnlinePlaySession, "DeclareCloseOnlinePlaySession"},
@@ -281,6 +281,17 @@ private:
     void UpdateFriendInfo(HLERequestContext& ctx) {
         // Refreshes cached friend profiles from the friend server; there is none, so nothing changes.
         LOG_WARNING(Service_Friend, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetProfileList(HLERequestContext& ctx) {
+        // There is no friend server, so no profile is known: hand back a zeroed output buffer.
+        LOG_WARNING(Service_Friend, "(STUBBED) called");
+        if (ctx.CanWriteBuffer()) {
+            std::vector<u8> empty(ctx.GetWriteBufferSize());
+            ctx.WriteBuffer(empty);
+        }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }

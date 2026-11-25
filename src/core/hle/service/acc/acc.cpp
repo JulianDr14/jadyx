@@ -1058,6 +1058,14 @@ void Module::Interface::GetBaasAccountManagerForApplication(HLERequestContext& c
     rb.PushIpcInterface<IManagerForApplication>(ctx, system, profile_manager);
 }
 
+void Module::Interface::LoadOpenContext(HLERequestContext& ctx) {
+    // Takes the user's Uid and returns the same manager GetBaasAccountManagerForApplication does.
+    LOG_DEBUG(Service_ACC, "called");
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(ResultSuccess);
+    rb.PushIpcInterface<IManagerForApplication>(ctx, system, profile_manager);
+}
+
 void Module::Interface::IsUserAccountSwitchLocked(HLERequestContext& ctx) {
     LOG_DEBUG(Service_ACC, "called");
     FileSys::NACP nacp;
@@ -1518,7 +1526,7 @@ public:
             {110, &ACC_U0::StoreSaveDataThumbnailApplication, "StoreSaveDataThumbnail"},
             {111, &ACC_U0::ClearSaveDataThumbnail, "ClearSaveDataThumbnail"},
             {120, nullptr, "CreateGuestLoginRequest"},
-            {130, nullptr, "LoadOpenContext"}, // 5.0.0+
+            {130, &ACC_U0::LoadOpenContext, "LoadOpenContext"}, // 5.0.0+
             {131, &ACC_U0::ListOpenContextStoredUsers, "ListOpenContextStoredUsers"}, // 6.0.0+
             {140, &ACC_U0::InitializeApplicationInfoRestricted, "InitializeApplicationInfoRestricted"}, // 6.0.0+
             {141, &ACC_U0::ListQualifiedUsers, "ListQualifiedUsers"}, // 6.0.0+

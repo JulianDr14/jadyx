@@ -1233,7 +1233,7 @@ std::pair<s32, Errno> BSD_USA::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
 
     switch (cmd) {
     case FcntlCmd::GETFL:
-        ASSERT(arg == 0);
+        // GETFL takes no argument; whatever the caller left in it is ignored.
         return {descriptor.flags, Errno::SUCCESS};
     case FcntlCmd::SETFL: {
         const bool enable = (arg & Network::FLAG_O_NONBLOCK) != 0;
@@ -1327,9 +1327,11 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
 
     if (optname == OptName::LINGER) {
-        ASSERT(optval.size() == sizeof(Linger));
-        auto linger = GetValue<Linger>(optval);
-        ASSERT(linger.onoff == 0 || linger.onoff == 1);
+        // Some titles pass only the on/off word; a missing timeout reads as zero.
+        if (optval.size() < sizeof(u32)) {
+            return Errno::INVAL;
+        }
+        const auto linger = GetValue<Linger>(optval);
 
         return Translate(socket->SetLinger(linger.onoff != 0, linger.linger));
     }
@@ -1362,6 +1364,12 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         return Translate(socket->SetRcvTimeo(value));
     case OptName::NOSIGPIPE:
         LOG_WARNING(Service, "(STUBBED) setting NOSIGPIPE to {}", value);
+        return Errno::SUCCESS;
+    case OptName::NO_OFFLOAD:
+    case OptName::NO_DDP:
+        // Horizon-only hints for the console's network offload; the host stack has no equivalent.
+        LOG_DEBUG(Service, "(STUBBED) setting optname={:#x} to {}", static_cast<u32>(optname),
+                  value);
         return Errno::SUCCESS;
     default:
         UNIMPLEMENTED_MSG("Unimplemented optname={}", optname);

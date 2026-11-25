@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -1028,9 +1029,18 @@ std::pair<s32, Errno> Socket::RecvFrom(int flags, std::span<u8> message, SockAdd
     return {-1, GetAndLogLastError()};
 }
 
+// Guest send flags (BSD MSG_DONTWAIT, MSG_NOSIGNAL, ...) have no portable host equivalent and are
+// not forwarded; the host send is made as if they were zero. Say so once instead of asserting.
+static void WarnIgnoredSendFlags(u32 flags) {
+    static std::atomic_bool warned{false};
+    if (flags != 0 && !warned.exchange(true)) {
+        LOG_WARNING(Network, "ignoring guest send flags {:#x}", flags);
+    }
+}
+
 std::pair<s32, Errno> Socket::Send(std::span<const u8> message, int flags) {
     ASSERT(message.size() < static_cast<size_t>((std::numeric_limits<int>::max)()));
-    ASSERT(flags == 0);
+    WarnIgnoredSendFlags(static_cast<u32>(flags));
 
     int native_flags = 0;
 #ifdef __unix__
@@ -1047,7 +1057,7 @@ std::pair<s32, Errno> Socket::Send(std::span<const u8> message, int flags) {
 
 std::pair<s32, Errno> Socket::SendTo(u32 flags, std::span<const u8> message,
                                      const SockAddrIn* addr) {
-    ASSERT(flags == 0);
+    WarnIgnoredSendFlags(flags);
 
     const sockaddr* to = nullptr;
     const int to_len = addr ? sizeof(sockaddr) : 0;

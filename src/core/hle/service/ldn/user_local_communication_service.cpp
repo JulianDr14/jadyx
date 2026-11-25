@@ -52,7 +52,7 @@ IUserLocalCommunicationService::IUserLocalCommunicationService(Core::System& sys
             {300, D<&IUserLocalCommunicationService::OpenStation>, "OpenStation"},
             {301, D<&IUserLocalCommunicationService::CloseStation>, "CloseStation"},
             {302, D<&IUserLocalCommunicationService::Connect>, "Connect"},
-            {303, nullptr, "ConnectPrivate"},
+            {303, D<&IUserLocalCommunicationService::ConnectPrivate>, "ConnectPrivate"},
             {304, D<&IUserLocalCommunicationService::Disconnect>, "Disconnect"},
             {400, D<&IUserLocalCommunicationService::Initialize>, "Initialize"},
             {401, D<&IUserLocalCommunicationService::Finalize>, "Finalize"},
@@ -274,6 +274,13 @@ Result IUserLocalCommunicationService::Connect(
 
     R_RETURN(lan_discovery.Connect(*network_info, connect_data.user_config,
                                    static_cast<u16>(connect_data.local_communication_version)));
+}
+
+Result IUserLocalCommunicationService::ConnectPrivate() {
+    // Private (passphrase-only) networks are not supported by the LAN discovery backend; fail the
+    // way a missing network does so the title reports a connection error instead of hanging.
+    LOG_WARNING(Service_LDN, "(STUBBED) called");
+    R_RETURN(ResultConnectionFailed);
 }
 
 Result IUserLocalCommunicationService::Disconnect() {

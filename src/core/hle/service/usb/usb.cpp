@@ -103,7 +103,7 @@ public:
     explicit IClientRootSession(Core::System& system_) : ServiceFramework{system_, "usb:hs"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, nullptr, "BindClientProcess"},
+            {0, &IClientRootSession::BindClientProcess, "BindClientProcess"},
             {1, nullptr, "QueryAllInterfaces"},
             {2, nullptr, "QueryAvailableInterfaces"},
             {3, nullptr, "QueryAcquiredInterfaces"},
@@ -116,6 +116,15 @@ public:
         // clang-format on
 
         RegisterHandlers(functions);
+    }
+
+private:
+    void BindClientProcess(HLERequestContext& ctx) {
+        // Hands over the client's process handle. No USB devices are exposed, so there is nothing
+        // to bind; succeed so the title can go on and find no interfaces.
+        LOG_DEBUG(Service_USB, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
     }
 };
 

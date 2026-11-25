@@ -391,7 +391,7 @@ public:
             {23, nullptr, "SetKeptInSleep"},
             {24, nullptr, "RegisterSocketDescriptor"},
             {25, nullptr, "UnregisterSocketDescriptor"},
-            {26, nullptr, "GetNetworkAccessStatus"}, //21.0.0+
+            {26, &IRequest::GetNetworkAccessStatus, "GetNetworkAccessStatus"}, //21.0.0+
         };
         RegisterHandlers(functions);
 
@@ -443,6 +443,16 @@ private:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
         rb.PushEnum(state);
+    }
+
+    void GetNetworkAccessStatus(HLERequestContext& ctx) {
+        // 21.0.0+. Polled every frame by some titles; reply with a zero status (no restriction)
+        // instead of the unimplemented path, which sends no reply at all.
+        LOG_DEBUG(Service_NIFM, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u32>(0);
     }
 
     void SetRequirementPreset(HLERequestContext& ctx) {

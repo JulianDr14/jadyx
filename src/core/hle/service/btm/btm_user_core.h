@@ -33,6 +33,9 @@ private:
     Result AcquireBleServiceDiscoveryEvent(Out<bool> out_is_valid,
                                            OutCopyHandle<Kernel::KReadableEvent> out_event);
 
+    Result RegisterBleGattDataPath();
+    Result UnregisterBleGattDataPath();
+
     Result AcquireBleMtuConfigEvent(Out<bool> out_is_valid,
                                     OutCopyHandle<Kernel::KReadableEvent> out_event);
 
