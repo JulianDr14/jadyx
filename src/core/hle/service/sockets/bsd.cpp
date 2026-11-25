@@ -1327,9 +1327,11 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
 
     if (optname == OptName::LINGER) {
-        ASSERT(optval.size() == sizeof(Linger));
-        auto linger = GetValue<Linger>(optval);
-        ASSERT(linger.onoff == 0 || linger.onoff == 1);
+        // Some titles pass only the on/off word; a missing timeout reads as zero.
+        if (optval.size() < sizeof(u32)) {
+            return Errno::INVAL;
+        }
+        const auto linger = GetValue<Linger>(optval);
 
         return Translate(socket->SetLinger(linger.onoff != 0, linger.linger));
     }
