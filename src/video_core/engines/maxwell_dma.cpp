@@ -7,6 +7,7 @@
 #include "common/algorithm.h"
 #include "common/assert.h"
 #include "common/logging.h"
+#include <algorithm>
 #include <ranges>
 #include "common/settings.h"
 #include "core/core.h"
@@ -117,30 +118,37 @@ void MaxwellDMA::Launch() {
             const auto dst_kind = memory_manager.GetPageKind(regs.offset_out);
             const bool is_src_pitch = IsPitchKind(src_kind);
             const bool is_dst_pitch = IsPitchKind(dst_kind);
+            // The swizzle only moves whole 16-byte units inside a GOB (address bits 0-3 stay put),
+            // so any length or alignment works by copying runs that never cross a 16-byte
+            // boundary on the block-linear side.
+            const auto chunk_size = [this](u64 block_linear_address, u32 offset) {
+                const u32 to_boundary = 16 - static_cast<u32>(block_linear_address % 16);
+                return (std::min)(to_boundary, regs.line_length_in - offset);
+            };
             if (!is_src_pitch && is_dst_pitch) {
-                UNIMPLEMENTED_IF(regs.line_length_in % 16 != 0);
-                UNIMPLEMENTED_IF(regs.offset_in % 16 != 0);
-                UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
                 read_buffer.resize_destructive(16);
-                for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+                for (u32 offset = 0; offset < regs.line_length_in;) {
+                    const u64 src = regs.offset_in + offset;
+                    const u32 size = chunk_size(src, offset);
                     Tegra::Memory::GpuGuestMemoryScoped<
                         u8, Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>
-                        tmp_write_buffer(memory_manager,
-                                         convert_linear_2_blocklinear_addr(regs.offset_in + offset),
-                                         16, &read_buffer);
-                    tmp_write_buffer.SetAddressAndSize(regs.offset_out + offset, 16);
+                        tmp_write_buffer(memory_manager, convert_linear_2_blocklinear_addr(src),
+                                         size, &read_buffer);
+                    tmp_write_buffer.SetAddressAndSize(regs.offset_out + offset, size);
+                    offset += size;
                 }
             } else if (is_src_pitch && !is_dst_pitch) {
-                UNIMPLEMENTED_IF(regs.line_length_in % 16 != 0);
-                UNIMPLEMENTED_IF(regs.offset_in % 16 != 0);
-                UNIMPLEMENTED_IF(regs.offset_out % 16 != 0);
                 read_buffer.resize_destructive(16);
-                for (u32 offset = 0; offset < regs.line_length_in; offset += 16) {
+                for (u32 offset = 0; offset < regs.line_length_in;) {
+                    const u64 dst = regs.offset_out + offset;
+                    const u32 size = chunk_size(dst, offset);
                     Tegra::Memory::GpuGuestMemoryScoped<
                         u8, Tegra::Memory::GuestMemoryFlags::SafeReadCachedWrite>
-                        tmp_write_buffer(memory_manager, regs.offset_in + offset, 16, &read_buffer);
-                    tmp_write_buffer.SetAddressAndSize(
-                        convert_linear_2_blocklinear_addr(regs.offset_out + offset), 16);
+                        tmp_write_buffer(memory_manager, regs.offset_in + offset, size,
+                                         &read_buffer);
+                    tmp_write_buffer.SetAddressAndSize(convert_linear_2_blocklinear_addr(dst),
+                                                       size);
+                    offset += size;
                 }
             } else {
                 if (!accelerate.BufferCopy(regs.offset_in, regs.offset_out, regs.line_length_in)) {
