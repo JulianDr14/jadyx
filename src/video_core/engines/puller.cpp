@@ -171,7 +171,13 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         break;
     }
     case BufferMethods::NonStallInterrupt: {
-        LOG_ERROR(HW_GPU, "Special puller engine method NonStallInterrupt not implemented");
+        // Only wakes host waiters; fences and semaphores already complete through their own
+        // methods. Logged once so it does not flood the log every frame.
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            LOG_WARNING(HW_GPU, "Puller method NonStallInterrupt is ignored");
+        }
         break;
     }
     case BufferMethods::MemOpA: {
