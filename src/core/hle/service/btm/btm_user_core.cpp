@@ -48,8 +48,8 @@ IBtmUserCore::IBtmUserCore(Core::System& system_)
         {33, C<&IBtmUserCore::AcquireBleMtuConfigEvent>, "AcquireBleMtuConfigEvent"},
         {34, nullptr, "ConfigureBleMtu"},
         {35, nullptr, "GetBleMtu"},
-        {36, nullptr, "RegisterBleGattDataPath"},
-        {37, nullptr, "UnregisterBleGattDataPath"},
+        {36, C<&IBtmUserCore::RegisterBleGattDataPath>, "RegisterBleGattDataPath"},
+        {37, C<&IBtmUserCore::UnregisterBleGattDataPath>, "UnregisterBleGattDataPath"},
     };
     // clang-format on
     RegisterHandlers(functions);
@@ -100,6 +100,17 @@ Result IBtmUserCore::AcquireBleMtuConfigEvent(Out<bool> out_is_valid,
 
     *out_is_valid = true;
     *out_event = &config_event->GetReadableEvent();
+    R_SUCCEED();
+}
+
+Result IBtmUserCore::RegisterBleGattDataPath() {
+    // No BLE device ever connects, so a data path never carries anything; accept the registration.
+    LOG_WARNING(Service_BTM, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result IBtmUserCore::UnregisterBleGattDataPath() {
+    LOG_WARNING(Service_BTM, "(STUBBED) called");
     R_SUCCEED();
 }
 
