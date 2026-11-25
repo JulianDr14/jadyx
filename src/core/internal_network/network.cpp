@@ -805,8 +805,10 @@ std::pair<s32, Errno> Poll(std::vector<PollFD>& pollfds, s32 timeout) {
     const int result =
         WSAPoll(host_pollfds.data(), static_cast<ULONG>(host_pollfds.size()), timeout);
     if (result == 0) {
-        ASSERT(std::all_of(host_pollfds.begin(), host_pollfds.end(),
-                           [](WSAPOLLFD fd) { return fd.revents == 0; }));
+        // A timeout reports nothing, even if WSAPoll left some revents bits set.
+        for (size_t i = 0; i < num; ++i) {
+            pollfds[i].revents = PollEvents{};
+        }
         return {0, Errno::SUCCESS};
     }
 
