@@ -52,6 +52,9 @@ enum class Errno {
     ISCONN,
     ADDRINUSE,
     ADDRNOTAVAIL,
+    FAULT,
+    NOTSOCK,
+    NETRESET,
     OTHER,
 };
 

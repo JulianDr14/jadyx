@@ -162,6 +162,12 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::ADDRINUSE;
     case WSAEADDRNOTAVAIL:
         return Errno::ADDRNOTAVAIL;
+    case WSAEFAULT:
+        return Errno::FAULT;
+    case WSAENOTSOCK:
+        return Errno::NOTSOCK;
+    case WSAENETRESET:
+        return Errno::NETRESET;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", e);
         return Errno::OTHER;
@@ -307,6 +313,12 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::ADDRINUSE;
     case EADDRNOTAVAIL:
         return Errno::ADDRNOTAVAIL;
+    case EFAULT:
+        return Errno::FAULT;
+    case ENOTSOCK:
+        return Errno::NOTSOCK;
+    case ENETRESET:
+        return Errno::NETRESET;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;
