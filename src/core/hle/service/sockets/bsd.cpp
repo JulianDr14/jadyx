@@ -1365,6 +1365,12 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     case OptName::NOSIGPIPE:
         LOG_WARNING(Service, "(STUBBED) setting NOSIGPIPE to {}", value);
         return Errno::SUCCESS;
+    case OptName::NO_OFFLOAD:
+    case OptName::NO_DDP:
+        // Horizon-only hints for the console's network offload; the host stack has no equivalent.
+        LOG_DEBUG(Service, "(STUBBED) setting optname={:#x} to {}", static_cast<u32>(optname),
+                  value);
+        return Errno::SUCCESS;
     default:
         UNIMPLEMENTED_MSG("Unimplemented optname={}", optname);
         return Errno::SUCCESS;
