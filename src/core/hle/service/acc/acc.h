@@ -39,6 +39,7 @@ public:
         void InitializeApplicationInfo(HLERequestContext& ctx);
         void InitializeApplicationInfoRestricted(HLERequestContext& ctx);
         void GetBaasAccountManagerForApplication(HLERequestContext& ctx);
+        void LoadOpenContext(HLERequestContext& ctx);
         void IsUserRegistrationRequestPermitted(HLERequestContext& ctx);
         void TrySelectUserWithoutInteractionDeprecated(HLERequestContext& ctx);
         void TrySelectUserWithoutInteraction(HLERequestContext& ctx);
