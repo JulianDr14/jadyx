@@ -80,6 +80,7 @@ add_library(shader_recompiler STATIC
     frontend/maxwell/translate/impl/barrier_operations.cpp
     frontend/maxwell/translate/impl/bitfield_extract.cpp
     frontend/maxwell/translate/impl/bitfield_insert.cpp
+    frontend/maxwell/translate/impl/byte_permute.cpp
     frontend/maxwell/translate/impl/branch_indirect.cpp
     frontend/maxwell/translate/impl/common_encoding.h
     frontend/maxwell/translate/impl/common_funcs.cpp
