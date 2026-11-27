@@ -185,6 +185,36 @@ public:
     }
 };
 
+/// IAsyncContext for account requests that need the online account server. There is none, so the
+/// request has nothing to wait for: it is done at once and succeeded, the same answer a console
+/// gives once its cache is fresh.
+class CompletedAsyncContext final : public IAsyncContext {
+public:
+    explicit CompletedAsyncContext(Core::System& system_) : IAsyncContext{system_} {
+        MarkComplete();
+    }
+
+    // Pulse: always complete; a new one is equivalent.
+    std::string_view PulseKind() const override {
+        return "acc:CompletedAsync";
+    }
+    void PulseCapture(Pulse::HandlerCapture& capture) const override {
+        capture.ExportEvent(0, completion_event);
+    }
+    Kernel::KEvent* PulseEvent(u32 slot) override {
+        return slot == 0 ? completion_event : nullptr;
+    }
+
+protected:
+    bool IsComplete() const override {
+        return true;
+    }
+    void Cancel() override {}
+    Result GetResult() const override {
+        return ResultSuccess;
+    }
+};
+
 class IAdministrator final : public ServiceFramework<IAdministrator> {
 public:
     explicit IAdministrator(Core::System& system_, Common::UUID)
@@ -235,8 +265,8 @@ public:
             {280, nullptr, "ProxyProcedureToAcquireApplicationAuthorizationForNintendoAccount"},
             {290, nullptr, "GetRequestForNintendoAccountUserResourceView"}, // 8.0.0+
             {300, nullptr, "TryRecoverNintendoAccountUserStateAsync"}, // 6.0.0+
-            {400, nullptr, "IsServiceEntryRequirementCacheRefreshRequiredForOnlinePlay"}, // 6.1.0+
-            {401, nullptr, "RefreshServiceEntryRequirementCacheForOnlinePlayAsync"}, // 6.1.0+
+            {400, &IAdministrator::IsServiceEntryRequirementCacheRefreshRequiredForOnlinePlay, "IsServiceEntryRequirementCacheRefreshRequiredForOnlinePlay"}, // 6.1.0+
+            {401, &IAdministrator::RefreshServiceEntryRequirementCacheForOnlinePlayAsync, "RefreshServiceEntryRequirementCacheForOnlinePlayAsync"}, // 6.1.0+
             {900, nullptr, "GetAuthenticationInfoForWin"}, // 9.0.0+
             {901, nullptr, "ImportAsyncForWin"}, // 9.0.0+
             {997, nullptr, "DebugUnlinkNintendoAccountAsync"},
@@ -252,6 +282,23 @@ private:
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
         rb.Push(false);
+    }
+
+    // switchbrew: takes 8 bytes (the application id), returns a u8. The cache never goes stale
+    // without an account server, so no refresh is needed.
+    void IsServiceEntryRequirementCacheRefreshRequiredForOnlinePlay(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_ACC, "called");
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u8>(0);
+    }
+
+    // switchbrew: takes 8 bytes (the application id), returns an IAsyncContext.
+    void RefreshServiceEntryRequirementCacheForOnlinePlayAsync(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_ACC, "called");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<CompletedAsyncContext>(ctx, system);
     }
 };
 
@@ -1404,6 +1451,10 @@ SessionRequestHandlerPtr Module::Interface::PulseRestore(std::string_view kind,
         in.End();
         return std::make_shared<EnsureTokenIdCacheAsyncInterface>(system);
     }
+    if (kind == "acc:CompletedAsync") {
+        in.End();
+        return std::make_shared<CompletedAsyncContext>(system);
+    }
     return nullptr;
 }
 
@@ -1468,7 +1519,8 @@ public:
             {203, &ACC_SU::DeleteUser, "DeleteUser"},
             {204, &ACC_SU::SetUserPosition, "SetUserPosition"},
             {205, &ACC_SU::GetProfileEditor, "GetProfileEditor"},
-            {206, nullptr, "CompleteUserRegistrationForcibly"},
+            // Forcibly only skips the online-account checks, which do not exist here.
+            {206, &ACC_SU::CompleteUserRegistration, "CompleteUserRegistrationForcibly"},
             {210, nullptr, "CreateFloatingRegistrationRequest"},
             {211, nullptr, "CreateProcedureToRegisterUserWithNintendoAccount"},
             {212, nullptr, "ResumeProcedureToRegisterUserWithNintendoAccount"},
