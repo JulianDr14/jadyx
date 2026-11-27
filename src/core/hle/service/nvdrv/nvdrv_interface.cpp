@@ -20,6 +20,7 @@
 #include "core/hle/service/nvdrv/nvdata.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/nvdrv/nvdrv_unbacked_devices.h"
 
 namespace Service::Nvidia {
 
@@ -39,11 +40,11 @@ void NVDRV::Open(HLERequestContext& ctx) {
     const auto& buffer = ctx.ReadBuffer();
     const std::string device_name(Common::StringFromBuffer(buffer));
 
-    if (device_name == "/dev/nvhost-prof-gpu") {
+    if (IsUnbackedDevice(device_name)) {
         rb.Push<DeviceFD>(0);
         rb.PushEnum(NvResult::NotSupported);
 
-        LOG_WARNING(Service_NVDRV, "/dev/nvhost-prof-gpu cannot be opened in production");
+        LOG_INFO(Service_NVDRV, "{} has no backend, answering NotSupported", device_name);
         return;
     }
 

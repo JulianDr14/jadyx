@@ -890,6 +890,7 @@ add_library(core STATIC
     hle/service/nvdrv/nvdrv.h
     hle/service/nvdrv/nvdrv_interface.cpp
     hle/service/nvdrv/nvdrv_interface.h
+    hle/service/nvdrv/nvdrv_unbacked_devices.h
     hle/service/nvdrv/nvmemp.cpp
     hle/service/nvdrv/nvmemp.h
     hle/service/nvnflinger/binder.h
