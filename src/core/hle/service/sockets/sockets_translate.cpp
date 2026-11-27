@@ -61,6 +61,22 @@ Errno Translate(Network::Errno value) {
         return Errno::NOTSOCK;
     case Network::Errno::NETRESET:
         return Errno::NETRESET;
+    case Network::Errno::INTR:
+        return Errno::INTR;
+    case Network::Errno::ACCES:
+        return Errno::ACCES;
+    case Network::Errno::NOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case Network::Errno::PROTONOSUPPORT:
+        return Errno::PROTONOSUPPORT;
+    case Network::Errno::OPNOTSUPP:
+        return Errno::OPNOTSUPP;
+    case Network::Errno::NOBUFS:
+        return Errno::NOBUFS;
+    case Network::Errno::SHUTDOWN:
+        return Errno::SHUTDOWN;
+    case Network::Errno::ALREADY:
+        return Errno::ALREADY;
     case Network::Errno::OTHER:
         // The host error was already logged where it was translated; INVAL keeps the guest from
         // treating the failed call as a success.

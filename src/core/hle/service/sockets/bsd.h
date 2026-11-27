@@ -58,6 +58,8 @@ private:
         std::shared_ptr<Network::SocketBase> socket;
         s32 flags = 0;
         bool is_connection_based = false;
+        // Socket type the guest asked for (SO_TYPE); Unspecified for eventfds.
+        Type type = Type::Unspecified;
         // TCP_NODELAY as the guest set it; read back by clients that verify the option.
         bool tcp_nodelay = false;
         // SOL_SOCKET u32 options as the guest set them, echoed by getsockopt.
