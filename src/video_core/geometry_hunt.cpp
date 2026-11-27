@@ -732,10 +732,11 @@ void ReportOob(const OobDraw& draw) {
         }
         std::fflush(out);
     }
-    LOG_WARNING(HW_GPU,
-                "geo_oob: ib {:#x} count {} max index {} + base {} >= {} vertices ({} bad), {}",
-                draw.index_address, draw.count, draw.max_index, draw.base_vertex,
-                draw.vertex_limit, draw.bad, draw.fixed ? "dropped" : "drawn");
+    // Handled and already capped at OOB_REPORTS distinct draws; the full record is in the hunt log.
+    LOG_INFO(HW_GPU,
+             "geo_oob: ib {:#x} count {} max index {} + base {} >= {} vertices ({} bad), {}",
+             draw.index_address, draw.count, draw.max_index, draw.base_vertex,
+             draw.vertex_limit, draw.bad, draw.fixed ? "dropped" : "drawn");
 }
 
 namespace {

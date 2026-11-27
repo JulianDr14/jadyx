@@ -968,7 +968,8 @@ template <class P>
 void BufferCache<P>::TrackDownload(DAddr address, u64 size, u64 record) {
     if (!download_shadow.Track(address, size, record, device_memory) && !merge_shadow_full) {
         merge_shadow_full = true;
-        LOG_WARNING(HW_GPU, "Download shadow full: some downloads land whole");
+        // Once per cache: a capacity note, not a fault (full downloads stay correct).
+        LOG_INFO(HW_GPU, "Download shadow full: some downloads land whole");
     }
 }
 

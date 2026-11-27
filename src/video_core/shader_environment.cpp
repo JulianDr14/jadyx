@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -69,9 +70,18 @@ static Shader::TextureType ConvertTextureType(const std::optional<Tegra::Texture
         return Shader::TextureType::Buffer;
     case Tegra::Texture::TextureType::TextureCubeArray:
         return Shader::TextureType::ColorArrayCube;
-    default:
-        LOG_ERROR(Shader, "Invalid texture_type={}. Falling back to texture_type={}", static_cast<int>(entry.texture_type.Value()), Shader::TextureType::Color2D);
+    default: {
+        // A texture header read from garbage; every shader that samples it would repeat the line,
+        // so each invalid value is logged once.
+        static std::atomic<u32> logged_types{};
+        const u32 value = static_cast<u32>(entry.texture_type.Value());
+        const u32 bit = 1U << (value & 31);
+        if ((logged_types.fetch_or(bit, std::memory_order_relaxed) & bit) == 0) {
+            LOG_WARNING(Shader, "Invalid texture_type={}. Falling back to texture_type={}", value,
+                        Shader::TextureType::Color2D);
+        }
         return Shader::TextureType::Color2D;
+    }
     }
 }
 

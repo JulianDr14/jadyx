@@ -1591,7 +1591,11 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     TrackImage(image, image_id);
 
     if (image.info.num_samples > 1 && !runtime.CanUploadMSAA()) {
-        LOG_WARNING(HW_GPU, "MSAA image uploads are not implemented");
+        // Logged once: it repeats for every upload of every MSAA image.
+        static std::atomic<bool> logged{};
+        if (!logged.exchange(true, std::memory_order_relaxed)) {
+            LOG_WARNING(HW_GPU, "MSAA image uploads are not implemented");
+        }
         runtime.TransitionImageLayout(image);
         return;
     }
