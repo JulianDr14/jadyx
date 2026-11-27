@@ -448,6 +448,7 @@ add_library(core STATIC
     hle/service/am/frontend/applet_profile_select.h
     hle/service/am/frontend/applet_software_keyboard.cpp
     hle/service/am/frontend/applet_software_keyboard.h
+    hle/service/am/frontend/applet_software_keyboard_layout.h
     hle/service/am/frontend/applet_software_keyboard_types.h
     hle/service/am/frontend/applet_web_browser.cpp
     hle/service/am/frontend/applet_web_browser.h

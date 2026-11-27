@@ -175,6 +175,7 @@ private:
     SwkbdCalcArgNew swkbd_calc_arg_new;
     bool use_changed_string_v2{false};
     bool use_moved_cursor_v2{false};
+    bool logged_unknown_request{false};
     bool inline_use_utf8{false};
     s32 current_cursor_position{};
 
