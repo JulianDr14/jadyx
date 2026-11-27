@@ -161,6 +161,9 @@ PixelFormat PixelFormatFromTextureInfo(TextureFormat format, ComponentType red, 
         return PixelFormat::D24_UNORM_S8_UINT;
     case Hash(TextureFormat::Z32_X24S8, FLOAT, UINT, UNORM, UNORM, LINEAR):
         return PixelFormat::D32_FLOAT_S8_UINT;
+    // Same depth-stencil layout with every non-depth component typed UINT, as Z32 has above.
+    case Hash(TextureFormat::Z32_X24S8, FLOAT, UINT, UINT, UINT, LINEAR):
+        return PixelFormat::D32_FLOAT_S8_UINT;
     case Hash(TextureFormat::R32B24G8, FLOAT, UINT, UNORM, UNORM, LINEAR):
         return PixelFormat::D32_FLOAT_S8_UINT;
     case Hash(TextureFormat::DXT1, UNORM, LINEAR):
