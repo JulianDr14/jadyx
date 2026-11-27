@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+
 #include "core/hle/result.h"
 #include "core/hle/service/am/applet.h"
 #include "core/hle/service/am/service/display_controller.h"
@@ -22,7 +24,7 @@ IDisplayController::IDisplayController(Core::System& system_, std::shared_ptr<Ap
         {3, nullptr, "GetCallerAppletCaptureImage"},
         {4, nullptr, "UpdateCallerAppletCaptureImage"},
         {5, D<&IDisplayController::GetLastForegroundCaptureImageEx>, "GetLastForegroundCaptureImageEx"},
-        {6, nullptr, "GetLastApplicationCaptureImageEx"},
+        {6, D<&IDisplayController::GetLastApplicationCaptureImageEx>, "GetLastApplicationCaptureImageEx"},
         {7, D<&IDisplayController::GetCallerAppletCaptureImageEx>, "GetCallerAppletCaptureImageEx"},
         {8, D<&IDisplayController::TakeScreenShotOfOwnLayer>, "TakeScreenShotOfOwnLayer"},
         {9, nullptr, "CopyBetweenCaptureBuffers"},
@@ -56,6 +58,17 @@ Result IDisplayController::GetLastForegroundCaptureImageEx(
     Out<bool> out_was_written, OutBuffer<BufferAttr_HipcMapAlias> out_image_data) {
     LOG_WARNING(Service_AM, "(STUBBED) called");
     *out_was_written = true;
+    R_SUCCEED();
+}
+
+// switchbrew: type-0x6 buffer of 0x384000 bytes (1280x720 RGBA8) and a "written" flag. No
+// application frame is kept for applets here, so the buffer is cleared and reported as not written,
+// which callers already handle (it is the answer before the first capture).
+Result IDisplayController::GetLastApplicationCaptureImageEx(
+    Out<bool> out_was_written, OutBuffer<BufferAttr_HipcMapAlias> out_image_data) {
+    LOG_DEBUG(Service_AM, "called, size={:#x}", out_image_data.size());
+    std::fill(out_image_data.begin(), out_image_data.end(), u8{0});
+    *out_was_written = false;
     R_SUCCEED();
 }
 
