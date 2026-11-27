@@ -31,6 +31,7 @@
 #include "video_core/texture_cache/blit_coverage.h"
 #include "video_core/texture_cache/formatter.h"
 #include "video_core/texture_cache/gc_policy.h"
+#include "video_core/texture_cache/image_limits.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/samples_helper.h"
 #include "video_core/texture_cache/texture_cache_base.h"
@@ -2048,6 +2049,9 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                                      RelaxedOptions options) {
     VideoCore::Perf::ScopedNsTimer timer{VideoCore::Perf::Counter::TextureCacheInsertNs};
     VideoCore::Perf::AddDetailed(VideoCore::Perf::Counter::TextureCacheInserts, 1);
+    if (!IsCreatableImage(info, gpu_addr)) {
+        return ImageId{};
+    }
     std::optional<DAddr> cpu_addr = gpu_memory->GpuToCpuAddress(gpu_addr);
     if (!cpu_addr) {
         const auto size = CalculateGuestSizeInBytes(info);
@@ -2068,6 +2072,37 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
     }
     slot_image_allocs[it->second].images.push_back(image_id);
     return image_id;
+}
+
+template <class P>
+bool TextureCache<P>::IsCreatableImage(const ImageInfo& info, GPUVAddr gpu_addr) {
+    const auto [samples_x, samples_y] = SamplesLog2(static_cast<int>(info.num_samples));
+    const ImageExtentRequest request{
+        .is_3d = info.type == ImageType::e3D,
+        .width = info.size.width >> samples_x,
+        .height = info.size.height >> samples_y,
+        .depth = info.size.depth,
+        .layers = static_cast<u32>(info.resources.layers),
+        .levels = static_cast<u32>(info.resources.levels),
+    };
+    if (FitsImageLimits(request)) {
+        return true;
+    }
+    // Checked before anything sizes the image: garbage dimensions overflow the guest size math.
+    // A texture header or render target read from garbage. Creating it could only fail in the
+    // host allocator, which stops the GPU; without an image the draw samples the null texture
+    // or skips the target, like a header the guest never wrote.
+    static std::atomic<u32> rejected{};
+    const u32 count = rejected.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 8 || count % 1024 == 0) {
+        LOG_WARNING(HW_GPU,
+                    "Skipping impossible image #{} at {:#x}: {} type {} {}x{}x{} layers {} "
+                    "levels {} samples {}",
+                    count, gpu_addr, info.format, static_cast<u32>(info.type), info.size.width,
+                    info.size.height, info.size.depth, info.resources.layers,
+                    info.resources.levels, info.num_samples);
+    }
+    return false;
 }
 
 template <class P>
@@ -2688,6 +2723,10 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             dst_id = InsertImage(dst_info, dst_addr, RelaxedOptions{});
         }
     } while (has_deleted_images);
+    if (!src_id || !dst_id) {
+        // One side is an impossible image (IsCreatableImage); there is nothing to blit.
+        return std::nullopt;
+    }
     const ImageBase& src_image = slot_images[src_id];
     const ImageBase& dst_image = slot_images[dst_id];
     const bool native_bgr = runtime.HasNativeBgr();
@@ -2703,6 +2742,9 @@ std::optional<typename TextureCache<P>::BlitImages> TextureCache<P>::GetBlitImag
             src_id = FindOrInsertImage(src_info, src_addr, RelaxedOptions{});
             dst_id = FindOrInsertImage(dst_info, dst_addr, RelaxedOptions{});
         } while (has_deleted_images);
+        if (!src_id || !dst_id) {
+            return std::nullopt;
+        }
     }
     return {BlitImages{
         .dst_id = dst_id,
