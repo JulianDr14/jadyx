@@ -352,9 +352,18 @@ void Scheduler::WaitSubmitted(u64 tick) {
 }
 
 void Scheduler::DrainForShutdown() noexcept {
-    if (FAILED(device.Get()->GetDeviceRemovedReason())) return;
-    try { Finish(); }
-    catch (const std::exception& e) { LOG_ERROR(Render, "GPU teardown: {}", e.what()); }
+    if (FAILED(device.Get()->GetDeviceRemovedReason())) {
+        recorder->DiscardRecorded();
+        try { recorder->WaitIdle(); } catch (...) {}
+        return;
+    }
+    try {
+        Finish();
+    } catch (const std::exception& e) {
+        LOG_ERROR(Render, "GPU teardown: {}", e.what());
+        recorder->DiscardRecorded();
+        try { recorder->WaitIdle(); } catch (...) {}
+    }
 }
 
 void Scheduler::Finish() {
@@ -376,6 +385,12 @@ void Scheduler::Wait(u64 tick) {
     }
     if (IsFree(tick)) {
         return;
+    }
+    if (IsRecordingThread() && before_recording_wait) {
+        before_recording_wait();
+        if (IsFree(tick)) {
+            return;
+        }
     }
     // Only the recording (GPU) thread stalls the frame by waiting; the fence thread waits by
     // design.

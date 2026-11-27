@@ -93,6 +93,25 @@ enum class PendingDrawAction : u8 {
 [[nodiscard]] PendingDrawAction DecideBudgetedDraw(u32 wait_small_draws, const PendingDraw& draw,
                                                    bool budget_left) noexcept;
 
+/// Defers graphics PSO waits in Off ("shaders wait") mode to the recording thread and
+/// drains/helps build pending PSOs in parallel at frame boundaries ("pso_parallel_wait=0|1").
+void SetParallelPsoWait(bool enabled);
+[[nodiscard]] bool GetParallelPsoWait() noexcept;
+
+struct ParallelPsoWaitStats {
+    u64 deferred_draws;
+    u64 deferred_pipelines;
+    u64 multi_pipeline_batches;
+    u64 helper_claims;
+    u64 worker_completed_before_drain;
+};
+void NoteParallelDeferredDraw() noexcept;
+void NoteParallelDeferredBatch(u64 pipelines) noexcept;
+void NoteParallelHelperClaim() noexcept;
+void NoteParallelWorkerCompleted() noexcept;
+[[nodiscard]] ParallelPsoWaitStats GetParallelPsoWaitStats() noexcept;
+void ResetParallelPsoWaitStats() noexcept;
+
 /// GPU thread: counts what draws with pending pipelines did, for the periodic stats line.
 void CountPendingDraw(PendingDrawAction action) noexcept;
 /// pso_budget=check: a draw the budget would have skipped (would_skip) or waited for.

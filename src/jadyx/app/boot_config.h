@@ -116,6 +116,9 @@ struct BootConfig {
     /// The driver's compiled PSOs kept on disk and handed back to it ("pso_blobs=1"); off by
     /// default, as the console's driver may not take them.
     bool pso_blobs{};
+    /// Defer graphics PSO waits in Off mode to the recording thread and drain in parallel
+    /// ("pso_parallel_wait=0|1", requires async_record).
+    bool pso_parallel_wait{true};
     /// Upload staging in CPU-cached memory instead of write-combined ("cached_staging=0" turns it
     /// off).
     bool cached_staging{true};

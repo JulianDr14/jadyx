@@ -23,6 +23,7 @@ $units = @{
     'memory-guard'        = @{ flags = ''; sources = ''; link = '' }
     'overlay-memory'      = @{ flags = $common; sources = ''; link = '/link build-uwp/_deps/fmt-build/fmt.lib' }
     'pipeline-residency'  = @{ flags = ''; sources = ''; link = '' }
+    'parallel-pso-wait'   = @{ flags = $common; sources = ''; link = $commonLibs }
     'prewarm-budget'      = @{ flags = ''; sources = ''; link = '' }
     'fsr-plan'            = @{ flags = '/Zc:preprocessor /I externals/FidelityFX-FSR/ffx-fsr'; sources = 'src/video_core/fsr.cpp'; link = '' }
     'command-recorder'    = @{ flags = $common; sources = ''; link = $commonLibs }
