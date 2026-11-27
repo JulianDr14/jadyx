@@ -398,12 +398,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info,
         // If it fails, track without a bias
         storage_buffer = Track(low_addr, nullptr);
         if (!storage_buffer) {
-            // If that also fails, use NVN fallbacks
-            LOG_WARNING(Shader, "Storage buffer failed to track, using global memory fallbacks");
+            // If that also fails, use NVN fallbacks. A supported path, counted per shader in
+            // global_memory_fallbacks, so only debug builds need the line.
+            LOG_DEBUG(Shader, "Storage buffer failed to track, using global memory fallbacks");
             ++shader_info.global_memory_fallbacks;
             return;
         }
-        LOG_WARNING(Shader, "Storage buffer tracked without bias, index {} offset {}",
+        LOG_DEBUG(Shader, "Storage buffer tracked without bias, index {} offset {}",
                     storage_buffer->index, storage_buffer->offset);
     }
     // Collect storage buffer and the instruction

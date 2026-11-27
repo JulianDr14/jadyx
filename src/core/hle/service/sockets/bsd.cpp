@@ -1008,6 +1008,7 @@ std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol pro
         }
     }
     descriptor.is_connection_based = IsConnectionBased(type);
+    descriptor.type = type;
     const bool is_connection_based = descriptor.is_connection_based;
     if (type == Type::DGRAM) {
         descriptor.udp = std::make_shared<UdpTraffic>(fd);
@@ -1115,6 +1116,7 @@ std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer)
         file_descriptors[new_fd] = FileDescriptor{
             .socket = std::move(result.socket),
             .is_connection_based = descriptor.is_connection_based,
+            .type = descriptor.type,
         };
     }
 
@@ -1288,6 +1290,17 @@ Errno BSD_USA::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8
         }
         return Translate(getsockopt_err);
     }
+    case OptName::TYPE: {
+        // Read-only: the type the socket was created with. Eventfds share the table but are not
+        // sockets, so they answer ENOTSOCK like any other non-socket descriptor.
+        const Type type = file_descriptors[fd]->type;
+        if (type == Type::Unspecified) {
+            return Errno::NOTSOCK;
+        }
+        optval.resize(sizeof(u32));
+        PutValue(optval, static_cast<u32>(type));
+        return Errno::SUCCESS;
+    }
     default: {
         // Clients that verify an option after setting it close the socket on a zero answer, so
         // echo what the guest set.
@@ -1348,6 +1361,14 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     case OptName::REUSEADDR:
         ASSERT(value == 0 || value == 1);
         return Translate(socket->SetReuseAddr(value != 0));
+    case OptName::REUSEPORT:
+        // Lets several sockets bind one port (LAN discovery). The host's SO_REUSEADDR is the
+        // portable equivalent: on Windows it already allows shared binds, and Winsock has no
+        // SO_REUSEPORT.
+        return Translate(socket->SetReuseAddr(value != 0));
+    case OptName::TYPE:
+        // Read-only on every BSD stack.
+        return Errno::NOPROTOOPT;
     case OptName::KEEPALIVE:
         ASSERT(value == 0 || value == 1);
         return Translate(socket->SetKeepAlive(value != 0));
@@ -1553,6 +1574,7 @@ std::variant<s32, Errno> BSD_USA::DuplicateSocketImpl(s32 fd) {
         .socket = file_descriptors[fd]->socket,
         .flags = file_descriptors[fd]->flags,
         .is_connection_based = file_descriptors[fd]->is_connection_based,
+        .type = file_descriptors[fd]->type,
         .udp = file_descriptors[fd]->udp,
     };
     return new_fd;

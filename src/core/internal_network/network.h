@@ -55,6 +55,14 @@ enum class Errno {
     FAULT,
     NOTSOCK,
     NETRESET,
+    INTR,
+    ACCES,
+    NOPROTOOPT,
+    PROTONOSUPPORT,
+    OPNOTSUPP,
+    NOBUFS,
+    SHUTDOWN,
+    ALREADY,
     OTHER,
 };
 

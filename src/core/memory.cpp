@@ -21,6 +21,7 @@
 #include "common/log_throttle.h"
 #include "common/logging.h"
 #include "common/page_table.h"
+#include "common/page_run.h"
 #include "common/permafrost.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
@@ -310,11 +311,28 @@ struct Memory::Impl {
         });
     }
 
+    /// True when [addr, addr + size) is one host-contiguous run of directly addressable pages.
+    [[nodiscard]] bool IsHostSpan(VAddr addr, const std::size_t size) const noexcept {
+        // AARCH64 masks the upper 16 bit of all memory accesses
+        addr &= 0xffffffffffffULL;
+        const std::size_t length = size == 0 ? 1 : size;
+        if (!AddressSpaceContains(*current_page_table, addr, length)) {
+            return false;
+        }
+        return Common::IsHostContiguousRun(
+            current_page_table->entries, addr >> YUZU_PAGEBITS,
+            (addr + length - 1) >> YUZU_PAGEBITS, [](const auto& raw) {
+                const auto type = static_cast<Common::PageType>(raw.type);
+                return type == Common::PageType::Memory ||
+                       type == Common::PageType::RasterizerCachedMemory;
+            });
+    }
+
     [[nodiscard]] inline const u8* GetSpan(const VAddr addr, const std::size_t size) const noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        return IsHostSpan(addr, size) ? GetPointerSilent(addr) : nullptr;
     }
     [[nodiscard]] inline u8* GetSpan(const VAddr addr, const std::size_t size) noexcept {
-        return (current_page_table->entries[addr >> YUZU_PAGEBITS].Block() == current_page_table->entries[(addr + size) >> YUZU_PAGEBITS].Block()) ? GetPointerSilent(addr) : nullptr;
+        return IsHostSpan(addr, size) ? GetPointerSilent(addr) : nullptr;
     }
 
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
@@ -632,9 +650,6 @@ struct Memory::Impl {
             }
             page_table.entries.ZeroRegion(base, end);
         } else {
-            auto current_block = block_count.fetch_add(1, std::memory_order_relaxed);
-            ASSERT(current_block != 65535);
-
             page_table.entries.CommitRegion(base, end);
             page_table.jit_entries.CommitRegion(base, end);
             CommitJitRead(page_table, base, end);
@@ -642,7 +657,8 @@ struct Memory::Impl {
                 auto host_ptr = reinterpret_cast<u64>(system.DeviceMemory().GetPointer<u8>(target)) - (base << YUZU_PAGEBITS);;
                 auto& entry = page_table.entries.GetUnchecked(base);
 
-                entry.Store(false, type, current_block, host_ptr);
+                // The block id is unused: GetSpan proves contiguity from the stored host pointers.
+                entry.Store(false, type, 0, host_ptr);
                 page_table.jit_entries.GetUnchecked(base).Store(
                     type == Common::PageType::Memory ? host_ptr : 0);
                 StoreJitRead(page_table, base, type == Common::PageType::Memory ? host_ptr : 0);
@@ -934,7 +950,6 @@ struct Memory::Impl {
 #else
     Common::HostMemory* host_buffer{};
 #endif
-    std::atomic<u16> block_count = 0;
 };
 
 Memory::Memory(Core::System& system_) : system{system_} {

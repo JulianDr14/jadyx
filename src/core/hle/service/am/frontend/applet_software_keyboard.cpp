@@ -9,6 +9,7 @@
 #include "core/frontend/applets/software_keyboard.h"
 #include "core/hle/service/am/am.h"
 #include "core/hle/service/am/frontend/applet_software_keyboard.h"
+#include "core/hle/service/am/frontend/applet_software_keyboard_layout.h"
 #include "core/hle/service/am/service/storage.h"
 
 namespace Service::AM::Frontend {
@@ -189,36 +190,31 @@ void SoftwareKeyboard::InitializeForeground() {
     ASSERT(swkbd_config_storage != nullptr);
 
     const auto& swkbd_config_data = swkbd_config_storage->GetData();
-    ASSERT(swkbd_config_data.size() >= sizeof(SwkbdConfigCommon));
+    if (swkbd_config_data.size() < sizeof(SwkbdConfigCommon)) {
+        LOG_ERROR(Service_AM, "SwkbdConfig of {:#x} bytes is shorter than its common part",
+                  swkbd_config_data.size());
+        InitializeFrontendNormalKeyboard();
+        return;
+    }
 
     std::memcpy(&swkbd_config_common, swkbd_config_data.data(), sizeof(SwkbdConfigCommon));
 
-    switch (swkbd_applet_version) {
-    case SwkbdAppletVersion::Version5:
-    case SwkbdAppletVersion::Version65542:
-        ASSERT(swkbd_config_data.size() == sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigOld));
-        std::memcpy(&swkbd_config_old, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
-                    sizeof(SwkbdConfigOld));
+    // The storage size fixes the layout; the library version only names the SDK that built it.
+    const u8* const config_tail = swkbd_config_data.data() + sizeof(SwkbdConfigCommon);
+    switch (SwkbdConfigLayoutForSize(swkbd_config_data.size())) {
+    case SwkbdConfigLayout::Old:
+        std::memcpy(&swkbd_config_old, config_tail, sizeof(SwkbdConfigOld));
         break;
-    case SwkbdAppletVersion::Version196615:
-    case SwkbdAppletVersion::Version262152:
-    case SwkbdAppletVersion::Version327689:
-        ASSERT(swkbd_config_data.size() == sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigOld2));
-        std::memcpy(&swkbd_config_old2, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
-                    sizeof(SwkbdConfigOld2));
+    case SwkbdConfigLayout::Old2:
+        std::memcpy(&swkbd_config_old2, config_tail, sizeof(SwkbdConfigOld2));
         break;
-    case SwkbdAppletVersion::Version393227:
-    case SwkbdAppletVersion::Version524301:
-        ASSERT(swkbd_config_data.size() == sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigNew));
-        std::memcpy(&swkbd_config_new, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
-                    sizeof(SwkbdConfigNew));
+    case SwkbdConfigLayout::New:
+        std::memcpy(&swkbd_config_new, config_tail, sizeof(SwkbdConfigNew));
         break;
-    default:
-        UNIMPLEMENTED_MSG("Unknown SwkbdConfig revision={} with size={}", swkbd_applet_version,
-                          swkbd_config_data.size());
-        ASSERT(swkbd_config_data.size() >= sizeof(SwkbdConfigCommon) + sizeof(SwkbdConfigNew));
-        std::memcpy(&swkbd_config_new, swkbd_config_data.data() + sizeof(SwkbdConfigCommon),
-                    sizeof(SwkbdConfigNew));
+    case SwkbdConfigLayout::Truncated:
+        // Keep the default tail: reading part of a layout would mix fields of two revisions.
+        LOG_WARNING(Service_AM, "SwkbdConfig of {:#x} bytes matches no layout (revision {:#x})",
+                    swkbd_config_data.size(), static_cast<u32>(swkbd_applet_version));
         break;
     }
 
@@ -350,9 +346,16 @@ void SoftwareKeyboard::ProcessInlineKeyboardRequest() {
     case SwkbdRequestCommand::SetMovedCursorV2Flag:
         RequestSetMovedCursorV2Flag(request_data);
         break;
-    default:
-        UNIMPLEMENTED_MSG("Unknown SwkbdRequestCommand={}", request_command);
+    default: {
+        // Not a documented request (switchbrew lists 0x4 to 0xE). The applet ignores it; log the
+        // first one per keyboard only, games that send one tend to send it every frame.
+        if (!logged_unknown_request) {
+            logged_unknown_request = true;
+            LOG_WARNING(Service_AM, "ignoring unknown inline keyboard request {:#x} ({} bytes)",
+                        static_cast<u32>(request_command), request_data.size());
+        }
         break;
+    }
     }
 }
 
@@ -787,13 +790,15 @@ void SoftwareKeyboard::RequestFinalize(std::span<const u8> request_data) {
 }
 
 void SoftwareKeyboard::RequestSetUserWordInfo(std::span<const u8> request_data) {
-    LOG_WARNING(Service_AM, "SetUserWordInfo is not implemented.");
+    // No predictive text, so the words are not used; release the buffer like the applet does.
+    LOG_DEBUG(Service_AM, "Processing Request: SetUserWordInfo (words unused)");
 
     ReplyReleasedUserWordInfo();
 }
 
 void SoftwareKeyboard::RequestSetCustomizeDic(std::span<const u8> request_data) {
-    LOG_WARNING(Service_AM, "SetCustomizeDic is not implemented.");
+    // No predictive text: the dictionary is accepted and unused.
+    LOG_DEBUG(Service_AM, "Processing Request: SetCustomizeDic (dictionary unused)");
 }
 
 void SoftwareKeyboard::RequestCalc(std::span<const u8> request_data) {
@@ -934,11 +939,12 @@ void SoftwareKeyboard::RequestCalcNew() {
 }
 
 void SoftwareKeyboard::RequestSetCustomizedDictionaries(std::span<const u8> request_data) {
-    LOG_WARNING(Service_AM, "SetCustomizedDictionaries is not implemented.");
+    // No predictive text: the dictionaries are accepted and unused until UnsetCustomizedDictionaries.
+    LOG_DEBUG(Service_AM, "Processing Request: SetCustomizedDictionaries (dictionaries unused)");
 }
 
 void SoftwareKeyboard::RequestUnsetCustomizedDictionaries(std::span<const u8> request_data) {
-    LOG_WARNING(Service_AM, "(STUBBED) Processing Request: UnsetCustomizedDictionaries");
+    LOG_DEBUG(Service_AM, "Processing Request: UnsetCustomizedDictionaries");
 
     ReplyUnsetCustomizedDictionaries();
 }

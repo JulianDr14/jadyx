@@ -19,8 +19,8 @@ IBtmUserCore::IBtmUserCore(Core::System& system_)
     // clang-format off
     static const FunctionInfo functions[] = {
         {0, C<&IBtmUserCore::AcquireBleScanEvent>, "AcquireBleScanEvent"},
-        {1, nullptr, "GetBleScanFilterParameter"},
-        {2, nullptr, "GetBleScanFilterParameter2"},
+        {1, C<&IBtmUserCore::GetBleScanFilterParameter>, "GetBleScanFilterParameter"},
+        {2, C<&IBtmUserCore::GetBleScanFilterParameter2>, "GetBleScanFilterParameter2"},
         {3, nullptr, "StartBleScanForGeneral"},
         {4, nullptr, "StopBleScanForGeneral"},
         {5, nullptr, "GetBleScanResultsForGeneral"},
@@ -73,6 +73,22 @@ Result IBtmUserCore::AcquireBleScanEvent(Out<bool> out_is_valid,
 
     *out_is_valid = true;
     *out_event = &scan_event->GetReadableEvent();
+    R_SUCCEED();
+}
+
+// switchbrew: the u16 picks one of the sysmodule's fixed scan filters. There is no Bluetooth LE
+// here, so an empty filter is returned; with no scan running it never matches anything.
+Result IBtmUserCore::GetBleScanFilterParameter(Out<BleAdvertisePacketParameter> out_parameter,
+                                               u16 parameter_id) {
+    LOG_DEBUG(Service_BTM, "called, parameter_id={:#x}", parameter_id);
+    *out_parameter = {};
+    R_SUCCEED();
+}
+
+Result IBtmUserCore::GetBleScanFilterParameter2(Out<GattAttributeUuid> out_uuid,
+                                                u16 parameter_id) {
+    LOG_DEBUG(Service_BTM, "called, parameter_id={:#x}", parameter_id);
+    *out_uuid = {};
     R_SUCCEED();
 }
 

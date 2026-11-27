@@ -39,6 +39,14 @@ enum class Errno : u32 {
     HOSTUNREACH = 113,
     INPROGRESS = 115,
     ISCONN = 106,
+    INTR = 4,
+    ACCES = 13,
+    NOPROTOOPT = 92,
+    PROTONOSUPPORT = 93,
+    OPNOTSUPP = 95,
+    NOBUFS = 105,
+    SHUTDOWN = 108,
+    ALREADY = 114,
 };
 
 enum class GetAddrInfoError : s32 {
@@ -199,6 +207,7 @@ enum class SocketLevel : u32 {
 
 enum class OptName : u32 {
     REUSEADDR = 0x4,
+    REUSEPORT = 0x200,
     KEEPALIVE = 0x8,
     BROADCAST = 0x20,
     LINGER = 0x80,
@@ -207,6 +216,7 @@ enum class OptName : u32 {
     SNDTIMEO = 0x1005,
     RCVTIMEO = 0x1006,
     ERROR_ = 0x1007,   // avoid name collision with Windows macro
+    TYPE = 0x1008,
     NOSIGPIPE = 0x800, // at least according to libnx
     ACCEPTFILTER = 0x1000,
     BINTIME = 0x2000,

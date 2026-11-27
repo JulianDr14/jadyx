@@ -219,6 +219,7 @@ add_library(core STATIC
     hle/kernel/board/nintendo/nx/k_memory_layout.h
     hle/kernel/board/nintendo/nx/k_system_control.cpp
     hle/kernel/board/nintendo/nx/k_system_control.h
+    hle/kernel/board/nintendo/nx/secure_applet_memory.h
     hle/kernel/board/nintendo/nx/secure_monitor.h
     hle/kernel/code_set.cpp
     hle/kernel/code_set.h
@@ -447,6 +448,7 @@ add_library(core STATIC
     hle/service/am/frontend/applet_profile_select.h
     hle/service/am/frontend/applet_software_keyboard.cpp
     hle/service/am/frontend/applet_software_keyboard.h
+    hle/service/am/frontend/applet_software_keyboard_layout.h
     hle/service/am/frontend/applet_software_keyboard_types.h
     hle/service/am/frontend/applet_web_browser.cpp
     hle/service/am/frontend/applet_web_browser.h
@@ -888,6 +890,7 @@ add_library(core STATIC
     hle/service/nvdrv/nvdrv.h
     hle/service/nvdrv/nvdrv_interface.cpp
     hle/service/nvdrv/nvdrv_interface.h
+    hle/service/nvdrv/nvdrv_unbacked_devices.h
     hle/service/nvdrv/nvmemp.cpp
     hle/service/nvdrv/nvmemp.h
     hle/service/nvnflinger/binder.h

@@ -419,6 +419,9 @@ private:
     /// Remove joined images from the cache
     [[nodiscard]] ImageId JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr);
 
+    /// False, with a rate-limited warning, for images no host can create (image_limits.h).
+    [[nodiscard]] static bool IsCreatableImage(const ImageInfo& info, GPUVAddr gpu_addr);
+
     /// Whether the new image replaces an aliased one (SetReclaimSupersededImages).
     [[nodiscard]] bool IsResizedImage(const ImageBase& new_image, const ImageBase& old) const;
     /// Whether a bad overlap of a new image can go now (SetReclaimSupersededImages).

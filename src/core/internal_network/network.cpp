@@ -169,6 +169,22 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::NOTSOCK;
     case WSAENETRESET:
         return Errno::NETRESET;
+    case WSAEINTR:
+        return Errno::INTR;
+    case WSAEACCES:
+        return Errno::ACCES;
+    case WSAENOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case WSAEPROTONOSUPPORT:
+        return Errno::PROTONOSUPPORT;
+    case WSAEOPNOTSUPP:
+        return Errno::OPNOTSUPP;
+    case WSAENOBUFS:
+        return Errno::NOBUFS;
+    case WSAESHUTDOWN:
+        return Errno::SHUTDOWN;
+    case WSAEALREADY:
+        return Errno::ALREADY;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", e);
         return Errno::OTHER;
@@ -320,6 +336,22 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::NOTSOCK;
     case ENETRESET:
         return Errno::NETRESET;
+    case EINTR:
+        return Errno::INTR;
+    case EACCES:
+        return Errno::ACCES;
+    case ENOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case EPROTONOSUPPORT:
+        return Errno::PROTONOSUPPORT;
+    case EOPNOTSUPP:
+        return Errno::OPNOTSUPP;
+    case ENOBUFS:
+        return Errno::NOBUFS;
+    case ESHUTDOWN:
+        return Errno::SHUTDOWN;
+    case EALREADY:
+        return Errno::ALREADY;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;

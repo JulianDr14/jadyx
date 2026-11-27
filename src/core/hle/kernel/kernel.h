@@ -47,6 +47,10 @@ namespace Service::SM {
 class ServiceManager;
 }
 
+namespace Kernel::Board::Nintendo::Nx {
+class SecureAppletMemory;
+}
+
 namespace Kernel {
 
 class KClientPort;
@@ -324,6 +328,9 @@ public:
 
     /// Gets the memory layout.
     const KMemoryLayout& MemoryLayout() const;
+
+    /// Gets the secure region lent to applet-pool processes for their system resource.
+    Board::Nintendo::Nx::SecureAppletMemory& AppletSecureMemory();
 
     /// Pulse restore only: the next process created from metadata reuses these random layout
     /// choices instead of drawing new ones. Consumed by that process; cleared on failure.
