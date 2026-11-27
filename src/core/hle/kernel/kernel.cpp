@@ -30,6 +30,7 @@
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/hardware_properties.h"
+#include "core/hle/kernel/board/nintendo/nx/secure_applet_memory.h"
 #include "core/hle/kernel/init/init_slab_setup.h"
 #include "core/hle/kernel/k_client_port.h"
 #include "core/hle/kernel/k_dynamic_resource_manager.h"
@@ -130,6 +131,7 @@ struct KernelCore::Impl {
         // Initialize kernel memory and resources.
         InitializeSystemResourceLimit(kernel, system.CoreTiming());
         InitializeMemoryLayout();
+        InitializeSecureAppletMemory();
         InitializeShutdownThreads();
         InitializePhysicalCores();
         InitializePreemption(kernel);
@@ -805,6 +807,18 @@ struct KernelCore::Impl {
         memory_manager->Initialize(management_region.GetAddress(), management_region.GetSize());
     }
 
+    void InitializeSecureAppletMemory() {
+        if constexpr (KSystemControl::SecureAppletMemorySize > 0) {
+            const auto extents = memory_layout->GetKernelSecureAppletMemoryRegionPhysicalExtents();
+            ASSERT(extents.GetSize() == KSystemControl::SecureAppletMemorySize);
+            secure_applet_memory.Initialize(
+                GetInteger(memory_layout->GetLinearVirtualAddress(extents.GetAddress())),
+                extents.GetSize(), PageSize);
+        } else {
+            secure_applet_memory.Initialize(0, 0, PageSize);
+        }
+    }
+
     void InitializeHackSharedMemory(KernelCore& kernel) {
         // Setup memory regions for emulated processes
         // TODO(bunnei): These should not be hardcoded regions initialized within the kernel
@@ -904,6 +918,7 @@ struct KernelCore::Impl {
 
     // Memory layout
     std::optional<KMemoryLayout> memory_layout;
+    Board::Nintendo::Nx::SecureAppletMemory secure_applet_memory;
 
     std::array<KThread*, Core::Hardware::NUM_CPU_CORES> shutdown_threads{};
     std::array<std::optional<Kernel::KScheduler>, Core::Hardware::NUM_CPU_CORES> schedulers{};
@@ -1409,6 +1424,10 @@ const KWorkerTaskManager& KernelCore::WorkerTaskManager() const {
 
 const KMemoryLayout& KernelCore::MemoryLayout() const {
     return *impl->memory_layout;
+}
+
+Board::Nintendo::Nx::SecureAppletMemory& KernelCore::AppletSecureMemory() {
+    return impl->secure_applet_memory;
 }
 
 bool KernelCore::IsPhantomModeForSingleCore() const {

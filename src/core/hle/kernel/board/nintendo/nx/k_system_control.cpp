@@ -11,6 +11,7 @@
 #include "common/settings.h"
 
 #include "core/hle/kernel/board/nintendo/nx/k_system_control.h"
+#include "core/hle/kernel/board/nintendo/nx/secure_applet_memory.h"
 #include "core/hle/kernel/board/nintendo/nx/secure_monitor.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_table.h"
@@ -217,8 +218,20 @@ size_t KSystemControl::CalculateRequiredSecureMemorySize(size_t size, u32 pool) 
 
 Result KSystemControl::AllocateSecureMemory(KernelCore& kernel, KVirtualAddress* out, size_t size,
                                             u32 pool) {
-    // Applet secure memory is handled separately.
-    UNIMPLEMENTED_IF(pool == static_cast<u32>(KMemoryManager::Pool::Applet));
+    // Applet secure memory is handled separately: one fixed region lent to one applet at a time.
+    if (pool == static_cast<u32>(KMemoryManager::Pool::Applet)) {
+        u64 address = 0;
+        switch (kernel.AppletSecureMemory().Allocate(&address, size)) {
+        case SecureAppletMemory::Status::Ok:
+            *out = KVirtualAddress(address);
+            R_SUCCEED();
+        case SecureAppletMemory::Status::InvalidSize:
+            R_THROW(ResultInvalidSize);
+        case SecureAppletMemory::Status::OutOfMemory:
+            break;
+        }
+        R_THROW(ResultOutOfMemory);
+    }
 
     // Ensure the size is aligned.
     const size_t alignment =
@@ -246,7 +259,12 @@ Result KSystemControl::AllocateSecureMemory(KernelCore& kernel, KVirtualAddress*
 void KSystemControl::FreeSecureMemory(KernelCore& kernel, KVirtualAddress address, size_t size,
                                       u32 pool) {
     // Applet secure memory is handled separately.
-    UNIMPLEMENTED_IF(pool == static_cast<u32>(KMemoryManager::Pool::Applet));
+    if (pool == static_cast<u32>(KMemoryManager::Pool::Applet)) {
+        const bool freed = kernel.AppletSecureMemory().Free(GetInteger(address), size);
+        ASSERT_MSG(freed, "freeing applet secure memory that was not lent: {:#x} size {:#x}",
+                   GetInteger(address), size);
+        return;
+    }
 
     // Ensure the size is aligned.
     const size_t alignment =

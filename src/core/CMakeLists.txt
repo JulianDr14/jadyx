@@ -219,6 +219,7 @@ add_library(core STATIC
     hle/kernel/board/nintendo/nx/k_memory_layout.h
     hle/kernel/board/nintendo/nx/k_system_control.cpp
     hle/kernel/board/nintendo/nx/k_system_control.h
+    hle/kernel/board/nintendo/nx/secure_applet_memory.h
     hle/kernel/board/nintendo/nx/secure_monitor.h
     hle/kernel/code_set.cpp
     hle/kernel/code_set.h
